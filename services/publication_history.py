@@ -15,7 +15,7 @@ from repo.media_publication import MediaPublicationRepo
 from services.cache import TTLCache
 
 _DOUYIN_CONTENT_RE = re.compile(r"/(?:share/)?(?:video|note)/(\d+)(?:/|$)")
-_GROUP_TYPES = {ChatType.GROUP, ChatType.SUPERGROUP}
+_GROUP_TYPES = {ChatType.GROUP, ChatType.SUPERGROUP, ChatType.FORUM}
 
 
 def normalize_source_url(url: str) -> str:
@@ -59,7 +59,7 @@ def topic_title(message: Message) -> str | None:
 
 
 def safe_message_link(message: Message) -> str | None:
-    if not message.chat or message.chat.type != ChatType.SUPERGROUP:
+    if not message.chat or message.chat.type not in {ChatType.SUPERGROUP, ChatType.FORUM}:
         return None
     try:
         return message.link or None

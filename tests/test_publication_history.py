@@ -60,15 +60,22 @@ class PublicationIdentityTests(unittest.TestCase):
 
     def test_topic_is_part_of_scope(self) -> None:
         topic_message = build_message(chat_type=ChatType.SUPERGROUP, thread_id=88)
+        forum_message = build_message(chat_type=ChatType.FORUM, thread_id=89)
         general_message = build_message(chat_type=ChatType.SUPERGROUP)
         private_message = build_message(chat_type=ChatType.PRIVATE)
 
         self.assertEqual(message_scope(topic_message), (-1001234567890, 88))
+        self.assertEqual(message_scope(forum_message), (-1001234567890, 89))
         self.assertEqual(message_scope(general_message), (-1001234567890, 0))
         self.assertIsNone(message_scope(private_message))
 
     def test_supergroup_link_points_to_topic_message(self) -> None:
         message = build_message(chat_type=ChatType.SUPERGROUP, thread_id=88)
+
+        self.assertEqual(safe_message_link(message), "https://t.me/c/1234567890/88/100")
+
+    def test_forum_link_points_to_topic_message(self) -> None:
+        message = build_message(chat_type=ChatType.FORUM, thread_id=88)
 
         self.assertEqual(safe_message_link(message), "https://t.me/c/1234567890/88/100")
 
@@ -143,7 +150,7 @@ class DuplicateConfirmationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await store.pop(token))
 
     async def test_cross_topic_prompt_names_previous_topic(self) -> None:
-        message = build_message(chat_type=ChatType.SUPERGROUP, thread_id=88)
+        message = build_message(chat_type=ChatType.FORUM, thread_id=88)
         message.reply_text = AsyncMock()  # type: ignore[method-assign]
         record = PublicationRecord(
             source_url="https://example.com/video/1",
@@ -177,7 +184,7 @@ class DuplicateConfirmationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("confirm:token" in (button.callback_data or "") for button in buttons))
 
     async def test_same_topic_prompt_does_not_repeat_topic_name(self) -> None:
-        message = build_message(chat_type=ChatType.SUPERGROUP, thread_id=88)
+        message = build_message(chat_type=ChatType.FORUM, thread_id=88)
         message.reply_text = AsyncMock()  # type: ignore[method-assign]
         record = PublicationRecord(
             source_url="https://example.com/video/1",
