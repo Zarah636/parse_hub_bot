@@ -1,6 +1,8 @@
 import asyncio
 import os
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
+from html import escape
 from itertools import batched
 from typing import Any, BinaryIO, Literal, cast
 
@@ -16,6 +18,7 @@ from parsehub.types import (
     VideoFile,
 )
 from pyrogram import Client, enums, filters
+from pyrogram.enums import ButtonStyle
 from pyrogram.errors import (
     FloodWait,
     Forbidden,
@@ -31,6 +34,7 @@ from pyrogram.types import (
     InlineKeyboardMarkup as Ikm,
 )
 from pyrogram.types import (
+    CallbackQuery,
     InputMediaAnimation,
     InputMediaDocument,
     InputMediaPhoto,
@@ -57,6 +61,13 @@ from services.cache import CacheEntry, CacheMedia, CacheMediaType, CacheParseRes
 from services.flyinglife import flyinglife
 from services.hybrid import HybridParsePipeline
 from services.pipeline import PipelineResult, StatusReporter
+from services.publication_history import (
+    PendingDuplicateConfirmation,
+    PublicationRecord,
+    duplicate_confirmations,
+    message_scope,
+    publication_history,
+)
 from utils.helpers import pack_dir_to_tar_gz, to_list, with_request_id
 from utils.rate_limit import ParseRateLimitExceeded, parse_rate_limit
 
@@ -64,6 +75,13 @@ logger = logger.bind(name="Parse")
 SKIP_DOWNLOAD_THRESHOLD = 0
 GIF_ONLY_SKIP_DOWNLOAD_COUNT_THRESHOLD = 5
 MAX_RETRIES = 5
+DUPLICATE_CALLBACK_PREFIX = "duplicate_media"
+
+
+@dataclass(slots=True)
+class MediaSendResult:
+    cache_entry: CacheEntry | None
+    messages: list[Message]
 
 
 def _media_input(media: str | BinaryIO | None) -> str | BinaryIO:
@@ -147,6 +165,105 @@ class MessageStatusReporter(StatusReporter):
             logger.warning(f"消息发送失败, Bot 无权限: {e}")
 
 
+def _linked_location(label: str, link: str | None) -> str:
+    safe_label = escape(label)
+    if not link:
+        return safe_label
+    return f'<a href="{escape(link, quote=True)}">{safe_label}</a>'
+
+
+def _duplicate_confirmation_markup(token: str) -> Ikm:
+    return Ikm(
+        [
+            [
+                Ikb(
+                    "重新分享",
+                    callback_data=f"{DUPLICATE_CALLBACK_PREFIX}:confirm:{token}",
+                    style=ButtonStyle.PRIMARY,
+                ),
+                Ikb(
+                    "取消",
+                    callback_data=f"{DUPLICATE_CALLBACK_PREFIX}:cancel:{token}",
+                    style=ButtonStyle.DEFAULT,
+                ),
+            ]
+        ]
+    )
+
+
+async def _prompt_for_duplicate(msg: Message, url: str, mode: str, record: PublicationRecord) -> bool:
+    scope = message_scope(msg)
+    if scope is None or not msg.from_user:
+        return False
+
+    chat_id, message_thread_id = scope
+    pending = PendingDuplicateConfirmation(
+        url=url,
+        mode=mode,
+        user_id=msg.from_user.id,
+        chat_id=chat_id,
+        message_thread_id=message_thread_id,
+    )
+    token = await duplicate_confirmations.create(pending)
+    if message_thread_id and record.message_thread_id == message_thread_id:
+        location = _linked_location("本话题", record.message_link)
+        text = f"此视频已在{location}发送过，是否重新分享？"
+    elif record.message_thread_id:
+        previous_topic = record.topic_title or f"话题 #{record.message_thread_id}"
+        location = _linked_location(previous_topic, record.message_link)
+        text = f"此视频已在话题「{location}」发送过，是否重新分享？"
+    else:
+        location = _linked_location("本群", record.message_link)
+        text = f"此视频已在{location}发送过，是否重新分享？"
+    await msg.reply_text(
+        text,
+        reply_markup=_duplicate_confirmation_markup(token),
+        parse_mode=enums.ParseMode.HTML,
+        link_preview_options=LinkPreviewOptions(is_disabled=True),
+    )
+    logger.info(
+        f"命中重复视频: chat_id={chat_id}, thread_id={message_thread_id}, "
+        f"message_id={record.message_id}, requester={msg.from_user.id}"
+    )
+    return True
+
+
+def _cache_entry_has_video(entry: CacheEntry) -> bool:
+    return any(media.type == CacheMediaType.VIDEO for media in entry.media or [])
+
+
+async def _record_video_publication(
+    source_url: str,
+    request_message: Message,
+    sent_messages: list[Message],
+    *,
+    requester_user_id: int | None,
+) -> None:
+    try:
+        publication = await publication_history.record(
+            source_url,
+            request_message,
+            sent_messages,
+            requester_user_id=requester_user_id,
+        )
+    except Exception as e:
+        logger.warning(f"记录视频发布历史失败: {type(e).__name__}: {e}")
+        return
+    if publication:
+        logger.info(
+            f"已记录视频发布: chat_id={publication.chat_id}, "
+            f"thread_id={publication.message_thread_id}, message_id={publication.message_id}"
+        )
+
+
+async def _find_video_publication(source_url: str, message: Message) -> PublicationRecord | None:
+    try:
+        return await publication_history.find(source_url, message)
+    except Exception as e:
+        logger.warning(f"查询视频发布历史失败，继续解析: {type(e).__name__}: {e}")
+        return None
+
+
 # ── Handler ──────────────────────────────────────────────────────────
 
 
@@ -213,6 +330,75 @@ async def jx(cli: Client, msg: Message) -> None:
     await asyncio.gather(*tasks)
 
 
+@Client.on_callback_query(filters.regex(rf"^{DUPLICATE_CALLBACK_PREFIX}:"))
+async def duplicate_media_callback(cli: Client, cq: CallbackQuery) -> None:
+    if not cq.data or not cq.message:
+        return
+
+    parts = str(cq.data).split(":", 2)
+    if len(parts) != 3:
+        await cq.answer("无效的确认请求", show_alert=True)
+        return
+    _, action, token = parts
+    if action not in {"confirm", "cancel"}:
+        await cq.answer("无效的确认请求", show_alert=True)
+        return
+
+    pending = await duplicate_confirmations.get(token)
+    if pending is None:
+        await cq.answer("确认已过期，请重新发送链接", show_alert=True)
+        return
+    if cq.from_user.id != pending.user_id:
+        await cq.answer("这不是你的操作", show_alert=True)
+        return
+    if message_scope(cq.message) != (pending.chat_id, pending.message_thread_id):
+        await cq.answer("确认请求与当前会话不匹配", show_alert=True)
+        return
+
+    pending = await duplicate_confirmations.pop(token)
+    if pending is None:
+        await cq.answer("该请求已被处理", show_alert=True)
+        return
+
+    if action == "cancel":
+        await cq.answer("已取消")
+        await cq.message.edit_text(
+            "已取消。",
+            reply_markup=None,
+            parse_mode=enums.ParseMode.DISABLED,
+        )
+        logger.info(
+            f"用户取消重复视频上传: chat_id={pending.chat_id}, "
+            f"thread_id={pending.message_thread_id}, requester={pending.user_id}"
+        )
+        return
+
+    await cq.answer("已确认，正在重新分享")
+    await cq.message.edit_text(
+        "正在重新分享……",
+        reply_markup=None,
+        parse_mode=enums.ParseMode.DISABLED,
+    )
+    async with get_session() as session:
+        current = await AccountService(session, pending.user_id).ensure_account()
+
+    logger.info(
+        f"用户确认重复视频上传: chat_id={pending.chat_id}, "
+        f"thread_id={pending.message_thread_id}, requester={pending.user_id}"
+    )
+    await _handle_parse_request(
+        cli,
+        cq.message,
+        url=pending.url,
+        mode=pending.mode,
+        bypass_cache=True,
+        force_reupload=True,
+        requester_user_id=pending.user_id,
+        _t=t_[current.lang],
+        user_config=current.config,
+    )
+
+
 # ── 主流程 ───────────────────────────────────────────────────────────
 
 
@@ -229,6 +415,8 @@ async def _handle_parse_request(
     mode: Literal["raw", "preview", "zip"] | str = "preview",
     delete_share_url_msg: bool = False,
     bypass_cache: bool = False,
+    force_reupload: bool = False,
+    requester_user_id: int | None = None,
     _t: PreLocaleSelector,
     user_config: UserConfig,
 ) -> None:
@@ -240,6 +428,8 @@ async def _handle_parse_request(
             mode=mode,
             delete_share_url_msg=delete_share_url_msg,
             bypass_cache=bypass_cache,
+            force_reupload=force_reupload,
+            requester_user_id=requester_user_id,
             _t=_t,
             user_config=user_config,
         )
@@ -275,10 +465,13 @@ async def handle_parse(
     mode: Literal["raw", "preview", "zip"] | str = "preview",
     delete_share_url_msg: bool = False,
     bypass_cache: bool = False,
+    force_reupload: bool = False,
+    requester_user_id: int | None = None,
     _t: PreLocaleSelector,
     user_config: UserConfig,
 ) -> None:
     chat_id = msg.chat.id if msg.chat else None
+    requester_user_id = requester_user_id or (msg.from_user.id if msg.from_user else None)
     logger.info(f"收到解析请求: url={url}, chat_id={chat_id}, msg_id={msg.id}, mode={mode}")
     if bypass_cache:
         logger.debug("bypass_cache=True 绕过缓存")
@@ -323,9 +516,21 @@ async def handle_parse(
             await reporter.report_error(_t("获取原始链接"), e)
             return
 
+    if mode == "preview" and not force_reupload:
+        publication = await _find_video_publication(raw_url, msg)
+        if publication and await _prompt_for_duplicate(msg, url, mode, publication):
+            return
+
     if use_caching and not bypass_cache and (cached := await persistent_cache.get(raw_url)):
         logger.debug("file_id 缓存命中, 直接发送")
-        await _send_cached(msg, cached, raw_url, user_config=user_config)
+        sent_messages = await _send_cached(msg, cached, raw_url, user_config=user_config)
+        if _cache_entry_has_video(cached):
+            await _record_video_publication(
+                raw_url,
+                msg,
+                sent_messages,
+                requester_user_id=requester_user_id,
+            )
         return
 
     cached_parse_result = None if bypass_cache else await parse_cache.get(raw_url)
@@ -346,7 +551,17 @@ async def handle_parse(
             if pipeline.waited:
                 logger.debug("Singleflight 等待完成, 重新检查缓存")
                 if not bypass_cache and (cached := await persistent_cache.get(raw_url)):
-                    await _send_cached(msg, cached, raw_url, user_config=user_config)
+                    publication = await _find_video_publication(raw_url, msg)
+                    if publication and await _prompt_for_duplicate(msg, url, mode, publication):
+                        return
+                    sent_messages = await _send_cached(msg, cached, raw_url, user_config=user_config)
+                    if _cache_entry_has_video(cached):
+                        await _record_video_publication(
+                            raw_url,
+                            msg,
+                            sent_messages,
+                            requester_user_id=requester_user_id,
+                        )
                 else:
                     await handle_parse(
                         cli,
@@ -354,6 +569,8 @@ async def handle_parse(
                         url=url,
                         mode=mode,
                         bypass_cache=bypass_cache,
+                        force_reupload=force_reupload,
+                        requester_user_id=requester_user_id,
                         _t=_t,
                         user_config=user_config,
                     )
@@ -429,9 +646,16 @@ async def handle_parse(
         logger.debug(f"开始上传媒体: media_count={len(result.processed_list)}")
         await reporter.report(_t("上 传 中..."))
         try:
-            media_cache_entry = await _send_media(msg, parse_result, result.processed_list, caption, _t=_t)
-            if media_cache_entry:
-                await persistent_cache.set(raw_url, media_cache_entry)
+            send_result = await _send_media(msg, parse_result, result.processed_list, caption, _t=_t)
+            if send_result.cache_entry:
+                await persistent_cache.set(raw_url, send_result.cache_entry)
+            if parse_result.type == PostType.VIDEO:
+                await _record_video_publication(
+                    raw_url,
+                    msg,
+                    send_result.messages,
+                    requester_user_id=requester_user_id,
+                )
             await reporter.dismiss()
         except Exception as e:
             logger.opt(exception=e).debug("详细堆栈")
@@ -648,11 +872,13 @@ async def _send_single(
     photos_videos: list[InputMediaPhoto | InputMediaVideo],
     animations: list[InputMediaAnimation],
     caption: str,
-) -> list[CacheMedia] | None:
-    """发送单个媒体，返回 CacheMedia 列表。上传失败时降级为 document。
-    返回 None 表示不缓存
+) -> tuple[list[CacheMedia] | None, list[Message]]:
+    """发送单个媒体，返回缓存媒体与已发送消息。
+
+    缓存媒体为 None 表示不缓存。
     """
     media_list: list[CacheMedia] = []
+    sent_messages: list[Message] = []
     all_media = animations + photos_videos
 
     try:
@@ -697,17 +923,19 @@ async def _send_single(
                             )
                         )
 
-        if sent and (cm := _cache_media_from_message(sent)):
-            media_list.append(cm)
+        if sent:
+            sent_messages.append(sent)
+            if cm := _cache_media_from_message(sent):
+                media_list.append(cm)
     except Exception as e:
         logger.warning(f"上传失败 {e}, 使用兼容模式上传")
         await msg.reply_chat_action(enums.ChatAction.UPLOAD_DOCUMENT)
-        await _send_with_rate_limit(
+        sent = await _send_with_rate_limit(
             lambda: msg.reply_document(_media_input(all_media[0].media), caption=caption, force_document=True)
         )
-        return None
+        return None, [sent] if sent else []
 
-    return media_list
+    return media_list, sent_messages
 
 
 def _build_gif_button(media_refs: Sequence[AnyMediaRef]) -> Ikm:
@@ -728,11 +956,13 @@ async def _send_multi(
     media_refs: Sequence[AnyMediaRef],
     *,
     _t: PreLocaleSelector,
-) -> list[CacheMedia] | None:
-    """发送多个媒体（动图逐条、图片视频分批），返回 CacheMedia 列表。
-    返回 None 表示不缓存
+) -> tuple[list[CacheMedia] | None, list[Message]]:
+    """发送多个媒体，返回缓存媒体与已发送消息。
+
+    缓存媒体为 None 表示不缓存。
     """
     media_list: list[CacheMedia] = []
+    sent_messages: list[Message] = []
     not_cache = False
     if len([i for i in media_refs if isinstance(i, AniRef)]) > GIF_ONLY_SKIP_DOWNLOAD_COUNT_THRESHOLD:
         not_cache = True
@@ -754,8 +984,10 @@ async def _send_multi(
                 logger.warning(f"上传失败 {e}, 使用兼容模式上传")
                 not_cache = True
                 await msg.reply_chat_action(enums.ChatAction.UPLOAD_DOCUMENT)
-                await _send_with_rate_limit(
-                    lambda a=ani, c=caption_: msg.reply_document(_media_input(a.media), caption=c, force_document=True)  # type: ignore[misc]
+                sent = await _send_with_rate_limit(
+                    lambda a=ani, c=caption_: msg.reply_document(  # type: ignore[misc]
+                        _media_input(a.media), caption=c, force_document=True
+                    )
                 )
             else:
                 # 过大的 GIF 会返回 document
@@ -763,6 +995,8 @@ async def _send_multi(
                     media_list.append(CacheMedia(type=CacheMediaType.DOCUMENT, file_id=sent.document.file_id))
                 elif sent and sent.animation:
                     media_list.append(CacheMedia(type=CacheMediaType.ANIMATION, file_id=sent.animation.file_id))
+            if sent:
+                sent_messages.append(sent)
 
     try:
         for batch in batched(photos_videos, 10):
@@ -771,7 +1005,10 @@ async def _send_multi(
 
             await msg.reply_chat_action(enums.ChatAction.UPLOAD_PHOTO)
             # noinspection PyDefaultArgument
-            sent_msgs = await _send_with_rate_limit(lambda b=list(batch): msg.reply_media_group(media=b))  # type: ignore[misc]
+            sent_msgs = await _send_with_rate_limit(
+                lambda b=list(batch): msg.reply_media_group(media=b)  # type: ignore[misc]
+            )
+            sent_messages.extend(sent_msgs)
             for m in sent_msgs:
                 if cm := _cache_media_from_message(m):
                     media_list.append(cm)
@@ -786,10 +1023,13 @@ async def _send_multi(
 
             await msg.reply_chat_action(enums.ChatAction.UPLOAD_DOCUMENT)
             # noinspection PyDefaultArgument
-            await _send_with_rate_limit(lambda b=list(document_batch): msg.reply_media_group(media=b))  # type: ignore
-        return None
+            sent_msgs = await _send_with_rate_limit(
+                lambda b=list(document_batch): msg.reply_media_group(media=b)  # type: ignore
+            )
+            sent_messages.extend(sent_msgs)
+        return None, sent_messages
 
-    return None if not_cache else media_list
+    return (None if not_cache else media_list), sent_messages
 
 
 async def _send_media(
@@ -799,9 +1039,8 @@ async def _send_media(
     caption: str,
     *,
     _t: PreLocaleSelector,
-) -> CacheEntry | None:
-    """构建、发送媒体，并返回缓存条目。
-    返回 None 表示不缓存
+) -> MediaSendResult:
+    """构建、发送媒体，并返回缓存条目与已发送消息。
     """
     media_refs = to_list(parse_result.media)
     photos_videos, animations = _build_input_media(media_refs, processed_list)
@@ -810,20 +1049,20 @@ async def _send_media(
 
     if all_count == 1:
         logger.debug("单媒体模式发送")
-        media_list = await _send_single(msg, photos_videos, animations, caption)
+        media_list, sent_messages = await _send_single(msg, photos_videos, animations, caption)
     else:
         logger.debug(f"多媒体模式发送: total={all_count}")
-        media_list = await _send_multi(msg, photos_videos, animations, caption, media_refs, _t=_t)
+        media_list, sent_messages = await _send_multi(msg, photos_videos, animations, caption, media_refs, _t=_t)
 
     if media_list is None:
-        return None
-    return _make_cache_entry(parse_result, media_list)
+        return MediaSendResult(cache_entry=None, messages=sent_messages)
+    return MediaSendResult(cache_entry=_make_cache_entry(parse_result, media_list), messages=sent_messages)
 
 
 # ── 缓存发送 ─────────────────────────────────────────────────────────
 
 
-async def _send_cached(msg: Message, entry: CacheEntry, url: str, *, user_config: UserConfig) -> None:
+async def _send_cached(msg: Message, entry: CacheEntry, url: str, *, user_config: UserConfig) -> list[Message]:
     """从 file_id 缓存直接发送，跳过解析/下载/转码"""
     logger.debug(f"缓存发送: media={entry.media}")
     caption = build_caption_by_str(
@@ -836,59 +1075,64 @@ async def _send_cached(msg: Message, entry: CacheEntry, url: str, *, user_config
 
     # 富文本类型
     if entry.telegraph_url:
-        await msg.reply_text(
+        sent = await msg.reply_text(
             caption,
             link_preview_options=LinkPreviewOptions(show_above_text=True),
         )
-        return
+        return [sent]
 
     if not entry.media:
-        await msg.reply_text(
+        sent = await msg.reply_text(
             caption,
             link_preview_options=LinkPreviewOptions(is_disabled=True),
         )
-        return
+        return [sent]
 
     if len(entry.media) == 1:
-        await _send_cached_single(msg, entry.media[0], caption)
-    else:
-        await _send_cached_multi(msg, entry.media, caption)
+        return await _send_cached_single(msg, entry.media[0], caption)
+    return await _send_cached_multi(msg, entry.media, caption)
 
 
-async def _send_cached_single(msg: Message, m: CacheMedia, caption: str) -> None:
+async def _send_cached_single(msg: Message, m: CacheMedia, caption: str) -> list[Message]:
     """从缓存发送单个媒体。"""
     match m.type:
         case CacheMediaType.PHOTO:
             await msg.reply_chat_action(enums.ChatAction.UPLOAD_PHOTO)
-            await _send_with_rate_limit(lambda: msg.reply_photo(m.file_id, caption=caption))
+            sent = await _send_with_rate_limit(lambda: msg.reply_photo(m.file_id, caption=caption))
         case CacheMediaType.VIDEO:
             await msg.reply_chat_action(enums.ChatAction.UPLOAD_VIDEO)
-            await _send_with_rate_limit(
+            sent = await _send_with_rate_limit(
                 lambda: msg.reply_video(
                     m.file_id, caption=caption, supports_streaming=True, video_cover=m.cover_file_id
                 )
             )
         case CacheMediaType.ANIMATION:
             await msg.reply_chat_action(enums.ChatAction.UPLOAD_PHOTO)
-            await _send_with_rate_limit(lambda: msg.reply_animation(m.file_id, caption=caption))
+            sent = await _send_with_rate_limit(lambda: msg.reply_animation(m.file_id, caption=caption))
         case CacheMediaType.DOCUMENT:
             await msg.reply_chat_action(enums.ChatAction.UPLOAD_DOCUMENT)
-            await _send_with_rate_limit(lambda: msg.reply_document(m.file_id, caption=caption, force_document=True))
+            sent = await _send_with_rate_limit(
+                lambda: msg.reply_document(m.file_id, caption=caption, force_document=True)
+            )
+    return [sent] if sent else []
 
 
-async def _send_cached_multi(msg: Message, media: list[CacheMedia], caption: str) -> None:
+async def _send_cached_multi(msg: Message, media: list[CacheMedia], caption: str) -> list[Message]:
     """从缓存发送多个媒体。"""
     animations = [m for m in media if m.type == CacheMediaType.ANIMATION]
     others = [m for m in media if m.type != CacheMediaType.ANIMATION]
+    sent_messages: list[Message] = []
 
     for ani in animations:
         await msg.reply_chat_action(enums.ChatAction.UPLOAD_PHOTO)
-        await _send_with_rate_limit(
+        sent = await _send_with_rate_limit(
             lambda a=ani: msg.reply_animation(  # type: ignore[misc]
                 a.file_id,
                 caption=caption if a == animations[-1] and not others else "",
             )
         )
+        if sent:
+            sent_messages.append(sent)
 
     media_group = _build_cached_media_group(others)
     for batch in batched(media_group, 10):
@@ -897,7 +1141,10 @@ async def _send_cached_multi(msg: Message, media: list[CacheMedia], caption: str
 
         await msg.reply_chat_action(enums.ChatAction.UPLOAD_PHOTO)
         # noinspection PyDefaultArgument
-        await _send_with_rate_limit(lambda m=list(batch): msg.reply_media_group(m))  # type: ignore[misc]
+        sent_messages.extend(
+            await _send_with_rate_limit(lambda m=list(batch): msg.reply_media_group(m))  # type: ignore[misc]
+        )
+    return sent_messages
 
 
 def _build_cached_media_group(
