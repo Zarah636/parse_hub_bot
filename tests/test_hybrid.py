@@ -53,6 +53,7 @@ class HybridParsePipelineTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIs(result, local_result)
         run_local.assert_awaited_once_with(singleflight=False)
+        reporter.report.assert_not_awaited()
 
     async def test_remote_success_is_marked_for_cache_policy(self) -> None:
         reporter = Reporter()

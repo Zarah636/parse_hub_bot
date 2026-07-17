@@ -23,7 +23,7 @@ from parsehub.types import (
     VideoParseResult,
     VideoRef,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from core import bs
 from log import logger
@@ -67,6 +67,16 @@ class FlyingLifePayload(BaseModel):
     video: str | None = None
     musics: list[str] = Field(default_factory=list)
     music: str | None = None
+
+    @field_validator("images", "videos", "musics", mode="before")
+    @classmethod
+    def normalize_media_list(cls, value: Any) -> Any:
+        """Web API may return null or a scalar for optional media collections."""
+        if value is None or value == "":
+            return []
+        if isinstance(value, str):
+            return [value]
+        return value
 
     @property
     def video_list(self) -> list[str]:

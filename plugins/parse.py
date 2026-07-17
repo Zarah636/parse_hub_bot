@@ -16,7 +16,14 @@ from parsehub.types import (
     VideoFile,
 )
 from pyrogram import Client, enums, filters
-from pyrogram.errors import FloodWait, Forbidden, SlowmodeWait, WebpageCurlFailed, WebpageMediaEmpty
+from pyrogram.errors import (
+    FloodWait,
+    Forbidden,
+    MessageNotModified,
+    SlowmodeWait,
+    WebpageCurlFailed,
+    WebpageMediaEmpty,
+)
 from pyrogram.types import (
     InlineKeyboardButton as Ikb,
 )
@@ -93,6 +100,7 @@ class MessageStatusReporter(StatusReporter):
         self._msg: Message | None = None
         self._t = _t
         self._user_config = user_config
+        self._last_text: str | None = None
 
     async def report(self, text: str) -> None:
         if self._user_config.noprogress:
@@ -123,12 +131,16 @@ class MessageStatusReporter(StatusReporter):
             await self._msg.delete()
 
     async def _edit_text(self, text: str, **kwargs: Any) -> None:
+        if text == self._last_text:
+            return
         try:
             if self._msg is None:
                 self._msg = await self._user_msg.reply_text(text, **kwargs)
             else:
-                if self._msg.text != text:
-                    await self._msg.edit_text(text, **kwargs)
+                await self._msg.edit_text(text, **kwargs)
+            self._last_text = text
+        except MessageNotModified:
+            self._last_text = text
         except (FloodWait, SlowmodeWait):
             pass
         except Forbidden as e:

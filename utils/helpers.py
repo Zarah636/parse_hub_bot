@@ -1,5 +1,6 @@
 import asyncio
 import functools
+import shutil
 import tarfile
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
@@ -7,6 +8,31 @@ from pathlib import Path
 from typing import Any
 
 from log import logger
+
+
+def clear_directory_contents(dir_path: str | Path) -> None:
+    """Remove children of a working directory while preserving the directory itself.
+
+    Keeping the root is important when it is a Docker bind mount. Mounted child
+    directories are skipped so shutdown cleanup cannot cross mount boundaries.
+    """
+    root = Path(dir_path)
+    if not root.exists():
+        return
+    if not root.is_dir():
+        logger.warning(f"跳过清理非目录路径: {root}")
+        return
+
+    for child in root.iterdir():
+        try:
+            if child.is_mount():
+                logger.warning(f"跳过清理挂载点: {child}")
+            elif child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child)
+            else:
+                child.unlink(missing_ok=True)
+        except OSError as e:
+            logger.warning(f"清理下载残留失败: path={child}, error={type(e).__name__}")
 
 
 async def run_cmd(*cmd: str, timeout: float = 30) -> str:

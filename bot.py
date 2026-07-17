@@ -1,5 +1,4 @@
 import asyncio
-import shutil
 from typing import Any
 
 import pillow_heif
@@ -15,6 +14,7 @@ from log import logger, setup_logging
 from plugins.helpers import COMMANDS
 from services import flyinglife, parse_cache
 from utils.event_loop import setup_optimized_event_loop
+from utils.helpers import clear_directory_contents
 
 pillow_heif.register_heif_opener()
 
@@ -59,7 +59,7 @@ class Bot(Client):
         await close_db()
         # 结束时清理下载残留
         if self.cfg.download_dir.exists() and not self.cfg.debug_skip_cleanup:
-            shutil.rmtree(self.cfg.download_dir)
+            clear_directory_contents(self.cfg.download_dir)
 
     def init_watchdog(self) -> None:
         self.add_handler(ConnectHandler(on_connect))

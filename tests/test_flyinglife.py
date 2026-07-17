@@ -64,6 +64,20 @@ class FlyingLifeParseTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(FlyingLifeParseError, "暂不支持音频"):
             await service.parse("https://example.com/post", "https://example.com/post")
 
+    async def test_null_music_collection_is_normalized(self) -> None:
+        service = FlyingLifeService()
+        service._api_request = AsyncMock(  # type: ignore[method-assign]
+            return_value={
+                "text": "视频文案",
+                "videos": ["https://example.com/video.mp4"],
+                "musics": None,
+            }
+        )
+
+        result = await service.parse("https://v.douyin.com/example/", "https://www.douyin.com/video/1")
+
+        self.assertIsInstance(result, VideoParseResult)
+
     async def test_empty_result_falls_back(self) -> None:
         service = FlyingLifeService()
         service._api_request = AsyncMock(return_value={"text": "只有文字"})  # type: ignore[method-assign]

@@ -102,7 +102,6 @@ class HybridParsePipeline:
             )
         except Exception as e:
             logger.warning(f"FlyingLife 失败, fallback ParseHub: {type(e).__name__}: {e}")
-            await self._reporter.report(self._t("解 析 中..."))
             result = await self._run_local(singleflight=False)
             if result is None:
                 self.finish()
