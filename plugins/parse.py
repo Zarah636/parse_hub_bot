@@ -47,7 +47,9 @@ from plugins.helpers import (
 from repo.user_settings import UserConfig
 from services import AccountService, ParseService
 from services.cache import CacheEntry, CacheMedia, CacheMediaType, CacheParseResult, parse_cache, persistent_cache
-from services.pipeline import ParsePipeline, PipelineResult, StatusReporter
+from services.flyinglife import flyinglife
+from services.hybrid import HybridParsePipeline
+from services.pipeline import PipelineResult, StatusReporter
 from utils.helpers import pack_dir_to_tar_gz, to_list, with_request_id
 from utils.rate_limit import ParseRateLimitExceeded, parse_rate_limit
 
@@ -293,10 +295,21 @@ async def handle_parse(
             singleflight = not bypass_cache
             save_metadata = False
     try:
-        raw_url = await ParseService().get_raw_url(url)
+        platform_id = ParseService().get_platform(url).id
     except Exception as e:
         await reporter.report_error(_t("获取原始链接"), e)
         return
+
+    use_flyinglife = flyinglife.can_attempt(platform_id)
+    if use_flyinglife:
+        # 不预先调用 ParseHub 还原短链，确保 FlyingLife 是第一条网络链路。
+        raw_url = url
+    else:
+        try:
+            raw_url = await ParseService().get_raw_url(url)
+        except Exception as e:
+            await reporter.report_error(_t("获取原始链接"), e)
+            return
 
     if use_caching and not bypass_cache and (cached := await persistent_cache.get(raw_url)):
         logger.debug("file_id 缓存命中, 直接发送")
@@ -304,11 +317,12 @@ async def handle_parse(
         return
 
     cached_parse_result = None if bypass_cache else await parse_cache.get(raw_url)
-    with ParsePipeline(
+    with HybridParsePipeline(
         url,
         raw_url,
         reporter,
         parse_result=cached_parse_result,
+        platform_id=platform_id,
         singleflight=singleflight,
         skip_media_processing=skip_media_processing,
         skip_download_threshold=SKIP_DOWNLOAD_THRESHOLD,
@@ -337,7 +351,8 @@ async def handle_parse(
             return
 
         parse_result = result.parse_result
-        await parse_cache.set(raw_url, parse_result)
+        if result.engine != "flyinglife":
+            await parse_cache.set(raw_url, parse_result)
 
         # ── 富文本 → Telegraph ──
         if parse_result.type == PostType.RICHTEXT:

@@ -81,6 +81,42 @@ docker run -d \
   ghcr.io/z-mio/parse_hub_bot:latest
 ```
 
+### R5S（ARM64）部署
+
+R5S 需要运行 64 位 Linux，`uname -m` 应输出 `aarch64`。本仓库的 Compose 默认在 R5S 上本地构建
+`linux/arm64` 镜像，不会拉取未包含本次改动的上游镜像。
+
+```bash
+cp .env.exa .env
+# 编辑 .env，至少填写 API_ID、API_HASH、BOT_TOKEN 和 FlyingLife 开关
+
+mkdir -p data downloads logs
+docker compose build --pull
+
+# 首次部署：交互登录或输入 Session ID，凭据会写入 ./data/config
+docker compose run --rm bot python tools/flyinglife_auth.py
+
+docker compose up -d
+docker compose logs -f bot
+```
+
+已运行后如需重新认证：
+
+```bash
+docker compose exec bot python tools/flyinglife_auth.py --reauth
+docker compose restart bot
+```
+
+`data`、`downloads` 和 `logs` 默认绑定到仓库目录，可通过 `BOT_DATA_DIR`、`BOT_DOWNLOADS_DIR` 和
+`BOT_LOGS_DIR` 指向 R5S 的 SSD/NVMe。R5S 本机编译 `tgcrypto` 和安装 OpenCV 较耗时；内存较小时建议
+开启 swap，或使用下方 GitHub Actions 生成的多架构镜像。
+
+发布 GitHub Release 后，工作流会同时发布 `linux/amd64` 和 `linux/arm64` 到：
+
+```text
+ghcr.io/<你的 GitHub 用户名>/<仓库名>:latest
+```
+
 ### 💻 源码运行
 
 ```bash
@@ -247,6 +283,50 @@ platforms:
       - "SESSDATA=xxx; bili_jct=xxx; buvid3=xxx"
       - "SESSDATA=yyy; bili_jct=yyy; buvid3=yyy"
 ```
+
+## 🚀 FlyingLife 优先解析（可选）
+
+可将已验证的平台优先交给 `parse.flyinglife.cn`，所有媒体完整通过其代理下载并处理后再发送；
+解析、代理下载或登录状态失败时会在 Telegram 上传前自动回退到内置 ParseHub。
+
+> Telegram 用户权限继续由 Bot 原有的管理机制控制，FlyingLife 客户端不再维护独立白名单。
+
+```dotenv
+FLYINGLIFE_ENABLED=true
+FLYINGLIFE_PLATFORMS=douyin
+FLYINGLIFE_CONCURRENCY=1
+```
+
+首次认证运行：
+
+```bash
+uv run tools/flyinglife_auth.py
+```
+
+向导支持：
+
+1. 邮箱密码交互式登录（密码仅在内存中使用，不保存）；
+2. 直接隐藏输入 Session ID。
+
+验证成功的 Session ID 保存到 `data/config/flyinglife_auth.json`。重新认证：
+
+> Session ID 是可直接使用账号的明文凭据；`data` 目录已被 Git 忽略，但仍不要共享该文件，
+> 部署时应限制文件权限并持久化该目录。
+
+```bash
+uv run tools/flyinglife_auth.py --reauth
+```
+
+Docker 部署可执行：
+
+```bash
+docker compose exec bot python tools/flyinglife_auth.py --reauth
+```
+
+也可以通过 `FLYINGLIFE_SESSION_ID` 环境变量提供 Session ID。环境变量优先于认证文件。
+
+第一版默认只启用经过实测的抖音单视频和图集：视频封面不作为独立图片发送，图集保持原顺序；
+音频、多视频或无法可靠分类的结果会回退 ParseHub。
 
 ## 🌟 Star History
 

@@ -2,10 +2,20 @@ name: parse_hub_bot
 
 services:
   bot:
-    image: ghcr.io/z-mio/parse_hub_bot:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: parse-hub-bot:r5s-arm64
+    platform: ${DOCKER_PLATFORM:-linux/arm64}
     restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
     env_file:
       - .env
+    environment:
+      DATA_PATH: /app/data
+      DOWNLOAD_DIR: /app/downloads
     volumes:
-      - data:/app/data
-      - logs:/app/logs
+      - ${BOT_DATA_DIR:-./data}:/app/data
+      - ${BOT_DOWNLOADS_DIR:-./downloads}:/app/downloads
+      - ${BOT_LOGS_DIR:-./logs}:/app/logs

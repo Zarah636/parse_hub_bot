@@ -13,7 +13,7 @@ from db.init import init_db
 from i18n import ISO639_MAP
 from log import logger, setup_logging
 from plugins.helpers import COMMANDS
-from services import parse_cache
+from services import flyinglife, parse_cache
 from utils.event_loop import setup_optimized_event_loop
 
 pillow_heif.register_heif_opener()
@@ -46,6 +46,7 @@ class Bot(Client):
         await init_db()
         logger.success("数据库初始化完成")
 
+        await flyinglife.initialize()
         parse_cache.start_cleanup()
         await super().start()
         await self.set_menu()
@@ -54,6 +55,7 @@ class Bot(Client):
     async def stop(self, *args: Any, **kwargs: Any) -> None:
         ws.exit_flag = True
         await super().stop()
+        await flyinglife.close()
         await close_db()
         # 结束时清理下载残留
         if self.cfg.download_dir.exists() and not self.cfg.debug_skip_cleanup:
