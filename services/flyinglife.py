@@ -68,6 +68,11 @@ class FlyingLifePayload(BaseModel):
     musics: list[str] = Field(default_factory=list)
     music: str | None = None
 
+    @field_validator("text", mode="before")
+    @classmethod
+    def normalize_text(cls, value: Any) -> Any:
+        return "" if value is None else value
+
     @field_validator("images", "videos", "musics", mode="before")
     @classmethod
     def normalize_media_list(cls, value: Any) -> Any:

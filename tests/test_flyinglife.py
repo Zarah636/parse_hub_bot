@@ -98,6 +98,20 @@ class FlyingLifeParseTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsInstance(result, VideoParseResult)
 
+    async def test_null_text_is_normalized(self) -> None:
+        service = FlyingLifeService()
+        service._api_request = AsyncMock(  # type: ignore[method-assign]
+            return_value={
+                "text": None,
+                "video": "https://example.com/video.mp4",
+            }
+        )
+
+        result = await service.parse("https://v.douyin.com/example/", "https://www.douyin.com/video/1")
+
+        self.assertIsInstance(result, VideoParseResult)
+        self.assertEqual(result.content, "")
+
     async def test_empty_result_falls_back(self) -> None:
         service = FlyingLifeService()
         service._api_request = AsyncMock(return_value={"text": "只有文字"})  # type: ignore[method-assign]
