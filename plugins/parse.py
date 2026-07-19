@@ -626,6 +626,22 @@ async def handle_parse(
             )
         return
 
+    flyinglife_parse_result: AnyParseResult | None = None
+    skip_flyinglife = False
+    if mode == "preview" and not force_reupload and use_flyinglife:
+        try:
+            flyinglife_parse_result = await flyinglife.parse_only(url, raw_url, reporter, _t=_t)
+        except Exception as e:
+            skip_flyinglife = True
+            logger.warning(f"FlyingLife 预解析失败, fallback ParseHub: {type(e).__name__}: {e}")
+        else:
+            source_url = await _resolve_result_source_url(url, raw_url, platform_id, flyinglife_parse_result)
+            if flyinglife_parse_result.type == PostType.VIDEO:
+                publication = await _find_video_publication(source_url, msg)
+                if publication and await _prompt_for_duplicate(cli, msg, url, mode, publication):
+                    await reporter.dismiss()
+                    return
+
     cached_parse_result = None if bypass_cache else await parse_cache.get(raw_url)
     with HybridParsePipeline(
         url,
@@ -638,6 +654,8 @@ async def handle_parse(
         skip_download_threshold=SKIP_DOWNLOAD_THRESHOLD,
         gif_only_skip_download_count_threshold=GIF_ONLY_SKIP_DOWNLOAD_COUNT_THRESHOLD if mode == "preview" else 0,
         save_metadata=save_metadata,
+        flyinglife_parse_result=flyinglife_parse_result,
+        skip_flyinglife=skip_flyinglife,
         _t=_t,
     ) as pipeline:
         if (result := await pipeline.run()) is None:

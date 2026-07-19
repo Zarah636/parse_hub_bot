@@ -26,13 +26,18 @@ def translate(text: str) -> str:
     return text
 
 
-def build_pipeline(reporter: Reporter) -> HybridParsePipeline:
+def build_pipeline(
+    reporter: Reporter,
+    *,
+    flyinglife_parse_result: VideoParseResult | None = None,
+) -> HybridParsePipeline:
     return HybridParsePipeline(
         "https://v.douyin.com/example/",
         "https://v.douyin.com/example/",
         cast(StatusReporter, reporter),
         platform_id="douyin",
         singleflight=False,
+        flyinglife_parse_result=flyinglife_parse_result,
         _t=cast(PreLocaleSelector, translate),
     )
 
@@ -69,6 +74,21 @@ class HybridParsePipelineTests(unittest.IsolatedAsyncioTestCase):
 
         assert result is not None
         self.assertEqual(result.engine, "flyinglife")
+
+    async def test_remote_download_reuses_prepared_parse_result(self) -> None:
+        reporter = Reporter()
+        parse_result = VideoParseResult(video=VideoRef(url="https://example.com/proxy.mp4"))
+        pipeline = build_pipeline(reporter, flyinglife_parse_result=parse_result)
+        remote_result = FlyingLifeRunResult(parse_result=parse_result)
+
+        with (
+            patch.object(flyinglife, "can_attempt", return_value=True),
+            patch.object(flyinglife, "run", AsyncMock(return_value=remote_result)) as run,
+        ):
+            await pipeline.run()
+
+        assert run.await_args is not None
+        self.assertIs(run.await_args.kwargs["prepared_result"], parse_result)
 
 
 if __name__ == "__main__":

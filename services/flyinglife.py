@@ -387,6 +387,30 @@ class FlyingLifeService:
         media = files[0] if len(files) == 1 else files
         return DownloadResult(media=media, output_dir=output_dir)
 
+    async def parse_only(
+        self,
+        url: str,
+        raw_url: str,
+        reporter: FlyingLifeReporter,
+        *,
+        _t: PreLocaleSelector,
+    ) -> AnyParseResult:
+        """Parse metadata without starting the media proxy download."""
+        if time.monotonic() < self._open_until:
+            raise FlyingLifeUnavailable("远程解析处于熔断冷却期")
+
+        async with self._semaphore:
+            try:
+                await reporter.report(_t("解 析 中..."))
+                parse_result = await self.parse(url, raw_url)
+            except BaseException as e:
+                if isinstance(e, Exception):
+                    self._record_failure(e)
+                raise
+
+        self._record_success()
+        return parse_result
+
     async def run(
         self,
         url: str,
@@ -396,6 +420,7 @@ class FlyingLifeService:
         skip_media_processing: bool,
         save_metadata: bool,
         _t: PreLocaleSelector,
+        prepared_result: AnyParseResult | None = None,
     ) -> FlyingLifeRunResult:
         if time.monotonic() < self._open_until:
             raise FlyingLifeUnavailable("远程解析处于熔断冷却期")
@@ -403,8 +428,11 @@ class FlyingLifeService:
         async with self._semaphore:
             download_result: DownloadResult | None = None
             try:
-                await reporter.report(_t("解 析 中..."))
-                parse_result = await self.parse(url, raw_url)
+                if prepared_result is None:
+                    await reporter.report(_t("解 析 中..."))
+                    parse_result = await self.parse(url, raw_url)
+                else:
+                    parse_result = prepared_result
                 await reporter.report(_t("下 载 中..."))
 
                 async def progress(current: int, total: int, unit: str) -> None:

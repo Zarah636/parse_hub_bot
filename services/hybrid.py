@@ -29,6 +29,8 @@ class HybridParsePipeline:
         skip_download_threshold: int = 0,
         gif_only_skip_download_count_threshold: int = 0,
         save_metadata: bool = False,
+        flyinglife_parse_result: AnyParseResult | None = None,
+        skip_flyinglife: bool = False,
         _t: PreLocaleSelector,
     ) -> None:
         self._url = url
@@ -41,6 +43,8 @@ class HybridParsePipeline:
         self._skip_download_threshold = skip_download_threshold
         self._gif_threshold = gif_only_skip_download_count_threshold
         self._save_metadata = save_metadata
+        self._flyinglife_parse_result = flyinglife_parse_result
+        self._skip_flyinglife = skip_flyinglife
         self._t = _t
         self._local: ParsePipeline | None = None
         self._result: PipelineResult | None = None
@@ -75,7 +79,7 @@ class HybridParsePipeline:
         self._owns_inflight = False
 
     async def run(self) -> PipelineResult | None:
-        use_flyinglife = flyinglife.can_attempt(self._platform_id)
+        use_flyinglife = not self._skip_flyinglife and flyinglife.can_attempt(self._platform_id)
         if not use_flyinglife:
             return await self._run_local(singleflight=self._singleflight)
 
@@ -99,6 +103,7 @@ class HybridParsePipeline:
                 skip_media_processing=self._skip_media_processing,
                 save_metadata=self._save_metadata,
                 _t=self._t,
+                prepared_result=self._flyinglife_parse_result,
             )
         except Exception as e:
             logger.warning(f"FlyingLife 失败, fallback ParseHub: {type(e).__name__}: {e}")

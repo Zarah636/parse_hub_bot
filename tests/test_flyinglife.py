@@ -2,7 +2,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import httpx
 
@@ -21,6 +21,26 @@ from services.flyinglife import (  # noqa: E402
 
 
 class FlyingLifeParseTests(unittest.IsolatedAsyncioTestCase):
+    async def test_parse_only_does_not_start_proxy_download(self) -> None:
+        service = FlyingLifeService()
+        reporter = AsyncMock()
+        parse_result = VideoParseResult(video=VideoRef(url="https://example.com/video.mp4"))
+
+        with (
+            patch.object(service, "parse", AsyncMock(return_value=parse_result)) as parse,
+            patch.object(service, "download", AsyncMock()) as download,
+        ):
+            result = await service.parse_only(
+                "https://v.douyin.com/example/",
+                "https://v.douyin.com/example/",
+                reporter,
+                _t=lambda text: text,
+            )
+
+        self.assertIs(result, parse_result)
+        parse.assert_awaited_once()
+        download.assert_not_awaited()
+
     async def test_douyin_video_uses_proxy_and_keeps_cover_private(self) -> None:
         service = FlyingLifeService()
         service._api_request = AsyncMock(  # type: ignore[method-assign]
