@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine  # no
 from db.base import Base  # noqa: E402
 from db.models.media_publication import MediaPublication  # noqa: E402
 from plugins.parse import (  # noqa: E402
+    _expire_duplicate_prompt,
     _prompt_for_duplicate,
     _refresh_publication_record,
     _resolve_result_source_url,
@@ -38,6 +39,16 @@ from services.publication_history import (  # noqa: E402
     safe_message_link,
 )
 from tools.backfill_publication_sources import source_url_from_message  # noqa: E402
+from tools.expand_short_publication_sources import (  # noqa: E402
+    SourcePlan,
+    _entity_text,
+    short_source_entity,
+    updated_caption_entities,
+)
+from tools.rebuild_group_publications import (  # noqa: E402
+    normalize_supergroup_id,
+    source_url_from_publication,
+)
 
 
 def build_message(*, chat_type: ChatType, thread_id: int | None = None) -> Message:
@@ -53,6 +64,85 @@ def build_message(*, chat_type: ChatType, thread_id: int | None = None) -> Messa
 
 
 class PublicationIdentityTests(unittest.TestCase):
+    def test_short_source_entity_uses_visible_source_label_and_utf16_offsets(self) -> None:
+        caption = "😀 ▎Source"
+        message = Message(
+            id=1,
+            video=cast(Any, SimpleNamespace()),
+            caption=cast(Any, caption),
+            caption_entities=[
+                MessageEntity(
+                    type=enums.MessageEntityType.TEXT_LINK,
+                    offset=4,
+                    length=6,
+                    url="https://v.douyin.com/example/",
+                )
+            ],
+        )
+
+        entity = message.caption_entities[0]
+        self.assertEqual(_entity_text(caption, entity), "Source")
+        self.assertEqual(short_source_entity(message), (0, "https://v.douyin.com/example"))
+
+        updated = updated_caption_entities(
+            SourcePlan(
+                message=message,
+                entity_index=0,
+                short_url="https://v.douyin.com/example",
+                canonical_url="https://www.douyin.com/video/123",
+                resolution="expanded",
+                caption=caption,
+                caption_entities=tuple(message.caption_entities),
+            )
+        )
+        self.assertEqual(updated[0].url, "https://www.douyin.com/video/123")
+        self.assertEqual(updated[0].offset, entity.offset)
+        self.assertEqual(updated[0].length, entity.length)
+
+    def test_rebuild_accepts_visible_or_bot_api_supergroup_id(self) -> None:
+        self.assertEqual(normalize_supergroup_id(4345529300), -1004345529300)
+        self.assertEqual(normalize_supergroup_id(-1004345529300), -1004345529300)
+
+    def test_rebuild_reads_last_source_link_from_media_caption(self) -> None:
+        source_url = "https://v.douyin.com/example/"
+        message = Message(
+            id=1,
+            video=cast(Any, SimpleNamespace()),
+            caption=cast(Any, "author Source"),
+            caption_entities=[
+                MessageEntity(
+                    type=enums.MessageEntityType.TEXT_LINK,
+                    offset=0,
+                    length=6,
+                    url="https://www.douyin.com/user/example",
+                ),
+                MessageEntity(
+                    type=enums.MessageEntityType.TEXT_LINK,
+                    offset=7,
+                    length=6,
+                    url=source_url,
+                ),
+            ],
+        )
+
+        self.assertEqual(source_url_from_publication(message), "https://v.douyin.com/example")
+
+    def test_rebuild_ignores_source_links_without_publication_media(self) -> None:
+        message = Message(
+            id=1,
+            text=cast(Any, "Source"),
+            entities=[
+                MessageEntity(
+                    type=enums.MessageEntityType.TEXT_LINK,
+                    offset=0,
+                    length=6,
+                    url="https://v.douyin.com/example/",
+                )
+            ],
+        )
+
+        self.assertIsNone(source_url_from_publication(message))
+
     def test_douyin_content_id_uses_stable_source_identifier(self) -> None:
         self.assertEqual(
             douyin_content_id("https://www.douyin.com/video/7639803196995913914"),
@@ -213,8 +303,39 @@ class StableSourceTests(unittest.IsolatedAsyncioTestCase):
 
 
 class DuplicateConfirmationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_expired_prompt_is_deleted_and_confirmation_removed(self) -> None:
+        prompt = build_message(chat_type=ChatType.FORUM, thread_id=88)
+        prompt.delete = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        with (
+            patch("plugins.parse.asyncio.sleep", AsyncMock()),
+            patch("plugins.parse.duplicate_confirmations.pop", AsyncMock(return_value=None)) as pop_confirmation,
+        ):
+            await _expire_duplicate_prompt("token", prompt)
+
+        pop_confirmation.assert_awaited_once_with("token")
+        prompt.delete.assert_awaited_once_with()
+
+    async def test_expired_prompt_falls_back_to_status_when_delete_fails(self) -> None:
+        prompt = build_message(chat_type=ChatType.FORUM, thread_id=88)
+        prompt.delete = AsyncMock(return_value=False)  # type: ignore[method-assign]
+        prompt.edit_text = AsyncMock()  # type: ignore[method-assign]
+
+        with (
+            patch("plugins.parse.asyncio.sleep", AsyncMock()),
+            patch("plugins.parse.duplicate_confirmations.pop", AsyncMock(return_value=None)),
+        ):
+            await _expire_duplicate_prompt("token", prompt)
+
+        prompt.edit_text.assert_awaited_once_with(
+            "此提示已失效，请重新发送链接。",
+            reply_markup=None,
+            parse_mode=enums.ParseMode.DISABLED,
+        )
+
     async def test_confirmation_store_is_single_use(self) -> None:
         store = DuplicateConfirmationStore()
+        self.assertEqual(store.ttl, 10 * 60)
         pending = PendingDuplicateConfirmation(
             url="https://example.com/video/1",
             mode="preview",
@@ -278,7 +399,8 @@ class DuplicateConfirmationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cross_topic_prompt_names_previous_topic(self) -> None:
         message = build_message(chat_type=ChatType.FORUM, thread_id=88)
-        message.reply_text = AsyncMock()  # type: ignore[method-assign]
+        prompt = build_message(chat_type=ChatType.FORUM, thread_id=88)
+        message.reply_text = AsyncMock(return_value=prompt)  # type: ignore[method-assign]
         record = PublicationRecord(
             source_url="https://example.com/video/1",
             chat_id=-1001234567890,
@@ -293,6 +415,7 @@ class DuplicateConfirmationTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch("plugins.parse._refresh_publication_record", AsyncMock(return_value=record)),
             patch("plugins.parse.duplicate_confirmations.create", AsyncMock(return_value="token")),
+            patch("plugins.parse._schedule_duplicate_prompt_expiry") as schedule_expiry,
         ):
             prompted = await _prompt_for_duplicate(
                 cast(Client, AsyncMock()), cast(Message, message), record.source_url, "preview", record
@@ -314,6 +437,7 @@ class DuplicateConfirmationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([button.text for button in buttons], ["重新分享", "取消"])
         self.assertTrue(all(button.url is None for button in buttons))
         self.assertTrue(any("confirm:token" in (button.callback_data or "") for button in buttons))
+        schedule_expiry.assert_called_once_with("token", prompt)
 
     async def test_same_topic_prompt_does_not_repeat_topic_name(self) -> None:
         message = build_message(chat_type=ChatType.FORUM, thread_id=88)
@@ -332,6 +456,7 @@ class DuplicateConfirmationTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch("plugins.parse._refresh_publication_record", AsyncMock(return_value=record)),
             patch("plugins.parse.duplicate_confirmations.create", AsyncMock(return_value="token")),
+            patch("plugins.parse._schedule_duplicate_prompt_expiry"),
         ):
             await _prompt_for_duplicate(
                 cast(Client, AsyncMock()), cast(Message, message), record.source_url, "preview", record
@@ -362,6 +487,7 @@ class DuplicateConfirmationTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch("plugins.parse._refresh_publication_record", AsyncMock(return_value=record)),
             patch("plugins.parse.duplicate_confirmations.create", AsyncMock(return_value="token")),
+            patch("plugins.parse._schedule_duplicate_prompt_expiry"),
         ):
             await _prompt_for_duplicate(
                 cast(Client, AsyncMock()), cast(Message, message), record.source_url, "preview", record
@@ -399,6 +525,25 @@ class DuplicateConfirmationTests(unittest.IsolatedAsyncioTestCase):
         pop_confirmation.assert_not_awaited()
         query.answer.assert_awaited_once_with("这不是你的操作", show_alert=True)
 
+    async def test_clicking_expired_prompt_removes_buttons(self) -> None:
+        message = build_message(chat_type=ChatType.SUPERGROUP, thread_id=88)
+        message.edit_text = AsyncMock()  # type: ignore[method-assign]
+        query = SimpleNamespace(
+            data="duplicate_media:confirm:token",
+            message=message,
+            from_user=SimpleNamespace(id=42),
+            answer=AsyncMock(),
+        )
+
+        with patch("plugins.parse.duplicate_confirmations.get", AsyncMock(return_value=None)):
+            await duplicate_media_callback(cast(Client, AsyncMock()), cast(CallbackQuery, query))
+
+        message.edit_text.assert_awaited_once_with(
+            "此提示已失效，请重新发送链接。",
+            reply_markup=None,
+            parse_mode=enums.ParseMode.DISABLED,
+        )
+
     async def test_confirm_forces_real_redownload(self) -> None:
         prepared_parse_result = cast(Any, object())
         pending = PendingDuplicateConfirmation(
@@ -430,6 +575,7 @@ class DuplicateConfirmationTests(unittest.IsolatedAsyncioTestCase):
             patch("plugins.parse.get_session", fake_get_session),
             patch("plugins.parse.AccountService", return_value=account_service),
             patch("plugins.parse._handle_parse_request", AsyncMock()) as handle_request,
+            patch("plugins.parse._cancel_duplicate_prompt_expiry") as cancel_expiry,
         ):
             await duplicate_media_callback(cast(Client, AsyncMock()), cast(CallbackQuery, query))
 
@@ -442,6 +588,7 @@ class DuplicateConfirmationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(kwargs["force_reupload"])
         self.assertEqual(kwargs["requester_user_id"], 42)
         self.assertIs(kwargs["prepared_parse_result"], prepared_parse_result)
+        cancel_expiry.assert_called_once_with("token")
 
 
 if __name__ == "__main__":

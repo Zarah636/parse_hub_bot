@@ -81,6 +81,7 @@ SKIP_DOWNLOAD_THRESHOLD = 0
 GIF_ONLY_SKIP_DOWNLOAD_COUNT_THRESHOLD = 5
 MAX_RETRIES = 5
 DUPLICATE_CALLBACK_PREFIX = "duplicate_media"
+_duplicate_prompt_expiry_tasks: dict[str, asyncio.Task[None]] = {}
 
 
 @dataclass(slots=True)
@@ -245,6 +246,60 @@ async def _refresh_publication_record(cli: Client, record: PublicationRecord) ->
     )
 
 
+async def _mark_duplicate_prompt_expired(message: Message) -> None:
+    try:
+        await message.edit_text(
+            "此提示已失效，请重新发送链接。",
+            reply_markup=None,
+            parse_mode=enums.ParseMode.DISABLED,
+        )
+    except MessageNotModified:
+        return
+    except Exception as e:
+        logger.warning(
+            f"更新已失效的重复提示失败: chat_id={message.chat.id if message.chat else None}, "
+            f"message_id={message.id}, error={type(e).__name__}: {e}"
+        )
+
+
+async def _expire_duplicate_prompt(token: str, message: Message) -> None:
+    try:
+        await asyncio.sleep(duplicate_confirmations.ttl)
+        await duplicate_confirmations.pop(token)
+        deleted = False
+        try:
+            deleted = await message.delete()
+        except Exception as e:
+            logger.warning(
+                f"删除已失效的重复提示失败，改为显示失效状态: "
+                f"chat_id={message.chat.id if message.chat else None}, message_id={message.id}, "
+                f"error={type(e).__name__}: {e}"
+            )
+        if not deleted:
+            await _mark_duplicate_prompt_expired(message)
+        logger.info(
+            f"重复提示已自动失效: chat_id={message.chat.id if message.chat else None}, "
+            f"message_id={message.id}, deleted={deleted}"
+        )
+    finally:
+        current = asyncio.current_task()
+        if _duplicate_prompt_expiry_tasks.get(token) is current:
+            _duplicate_prompt_expiry_tasks.pop(token, None)
+
+
+def _schedule_duplicate_prompt_expiry(token: str, message: Message) -> None:
+    previous = _duplicate_prompt_expiry_tasks.pop(token, None)
+    if previous is not None:
+        previous.cancel()
+    _duplicate_prompt_expiry_tasks[token] = asyncio.create_task(_expire_duplicate_prompt(token, message))
+
+
+def _cancel_duplicate_prompt_expiry(token: str) -> None:
+    task = _duplicate_prompt_expiry_tasks.pop(token, None)
+    if task is not None:
+        task.cancel()
+
+
 async def _prompt_for_duplicate(
     cli: Client,
     msg: Message,
@@ -282,12 +337,13 @@ async def _prompt_for_duplicate(
     else:
         location = _linked_location("本群", record.message_link)
         text = f"此视频已在{location}发送过，是否重新分享？"
-    await msg.reply_text(
+    prompt = await msg.reply_text(
         text,
         reply_markup=_duplicate_confirmation_markup(token),
         parse_mode=enums.ParseMode.HTML,
         link_preview_options=LinkPreviewOptions(is_disabled=True),
     )
+    _schedule_duplicate_prompt_expiry(token, prompt)
     logger.info(
         f"命中重复视频: chat_id={chat_id}, thread_id={message_thread_id}, "
         f"message_id={record.message_id}, requester={msg.from_user.id}"
@@ -437,6 +493,7 @@ async def duplicate_media_callback(cli: Client, cq: CallbackQuery) -> None:
 
     pending = await duplicate_confirmations.get(token)
     if pending is None:
+        await _mark_duplicate_prompt_expired(cq.message)
         await cq.answer("确认已过期，请重新发送链接", show_alert=True)
         return
     if cq.from_user.id != pending.user_id:
@@ -451,6 +508,7 @@ async def duplicate_media_callback(cli: Client, cq: CallbackQuery) -> None:
         await cq.answer("该请求已被处理", show_alert=True)
         return
 
+    _cancel_duplicate_prompt_expiry(token)
     if action == "cancel":
         await cq.answer("已取消")
         await cq.message.edit_text(

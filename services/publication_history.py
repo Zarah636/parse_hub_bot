@@ -175,7 +175,12 @@ class PendingDuplicateConfirmation:
 
 class DuplicateConfirmationStore:
     def __init__(self, ttl: float = 10 * 60, maxsize: int = 1000) -> None:
+        self._ttl = ttl
         self._cache = TTLCache(ttl=ttl, maxsize=maxsize)
+
+    @property
+    def ttl(self) -> float:
+        return self._ttl
 
     async def create(self, pending: PendingDuplicateConfirmation) -> str:
         token = secrets.token_urlsafe(9)
