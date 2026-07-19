@@ -1,7 +1,7 @@
 import asyncio
 import os
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from html import escape
 from itertools import batched
 from typing import Any, BinaryIO, Literal, cast
@@ -22,7 +22,9 @@ from pyrogram.enums import ButtonStyle
 from pyrogram.errors import (
     FloodWait,
     Forbidden,
+    MessageIdInvalid,
     MessageNotModified,
+    MsgIdInvalid,
     SlowmodeWait,
     WebpageCurlFailed,
     WebpageMediaEmpty,
@@ -64,9 +66,12 @@ from services.pipeline import PipelineResult, StatusReporter
 from services.publication_history import (
     PendingDuplicateConfirmation,
     PublicationRecord,
+    douyin_content_id,
     duplicate_confirmations,
     message_scope,
     publication_history,
+    safe_message_link,
+    topic_title,
 )
 from utils.helpers import pack_dir_to_tar_gz, to_list, with_request_id
 from utils.rate_limit import ParseRateLimitExceeded, parse_rate_limit
@@ -191,7 +196,66 @@ def _duplicate_confirmation_markup(token: str) -> Ikm:
     )
 
 
-async def _prompt_for_duplicate(msg: Message, url: str, mode: str, record: PublicationRecord) -> bool:
+async def _refresh_publication_record(cli: Client, record: PublicationRecord) -> PublicationRecord | None:
+    try:
+        original = cast(
+            Message | None,
+            await cli.get_messages(record.chat_id, record.message_id, replies=0),
+        )
+    except (MessageIdInvalid, MsgIdInvalid):
+        original = None
+    except Exception as e:
+        logger.warning(
+            f"核验原视频消息失败，暂时保留历史记录: chat_id={record.chat_id}, "
+            f"message_id={record.message_id}, error={type(e).__name__}: {e}"
+        )
+        return record
+
+    if original is None or getattr(original, "empty", False):
+        try:
+            removed = await publication_history.remove(record.source_url, record.chat_id)
+        except Exception as e:
+            removed = False
+            logger.warning(
+                f"清理已删除视频的发布历史失败，后续成功发送将覆盖记录: chat_id={record.chat_id}, "
+                f"message_id={record.message_id}, error={type(e).__name__}: {e}"
+            )
+        logger.info(
+            f"原视频消息已删除，清理发布历史: chat_id={record.chat_id}, "
+            f"message_id={record.message_id}, removed={removed}"
+        )
+        return None
+
+    current_topic_title = topic_title(original)
+    if record.message_thread_id:
+        try:
+            topic = await cli.get_forum_topics_by_id(record.chat_id, record.message_thread_id)
+        except Exception as e:
+            logger.debug(
+                f"获取论坛话题名称失败，使用消息中的话题信息: chat_id={record.chat_id}, "
+                f"thread_id={record.message_thread_id}, error={type(e).__name__}: {e}"
+            )
+        else:
+            current_topic_title = getattr(topic, "title", None) or current_topic_title
+
+    return replace(
+        record,
+        topic_title=current_topic_title or record.topic_title,
+        message_link=safe_message_link(original) or record.message_link,
+    )
+
+
+async def _prompt_for_duplicate(
+    cli: Client,
+    msg: Message,
+    url: str,
+    mode: str,
+    record: PublicationRecord,
+) -> bool:
+    live_record = await _refresh_publication_record(cli, record)
+    if live_record is None:
+        return False
+    record = live_record
     scope = message_scope(msg)
     if scope is None or not msg.from_user:
         return False
@@ -232,6 +296,10 @@ def _cache_entry_has_video(entry: CacheEntry) -> bool:
     return any(media.type == CacheMediaType.VIDEO for media in entry.media or [])
 
 
+def _cache_entry_source_url(entry: CacheEntry, fallback: str) -> str:
+    return entry.parse_result.raw_url or fallback
+
+
 async def _record_video_publication(
     source_url: str,
     request_message: Message,
@@ -262,6 +330,26 @@ async def _find_video_publication(source_url: str, message: Message) -> Publicat
     except Exception as e:
         logger.warning(f"查询视频发布历史失败，继续解析: {type(e).__name__}: {e}")
         return None
+
+
+async def _resolve_result_source_url(
+    url: str,
+    raw_url: str,
+    platform_id: str,
+    parse_result: AnyParseResult,
+) -> str:
+    source_url = str(parse_result.raw_url or raw_url)
+    if platform_id.lower() == "douyin" and douyin_content_id(source_url) is None:
+        try:
+            resolved_url = await ParseService().get_raw_url(url)
+        except Exception as e:
+            logger.warning(f"抖音作品链接标准化失败，暂用原链接查重: {type(e).__name__}: {e}")
+        else:
+            if douyin_content_id(resolved_url):
+                source_url = resolved_url
+
+    parse_result.raw_url = source_url
+    return source_url
 
 
 # ── Handler ──────────────────────────────────────────────────────────
@@ -518,15 +606,20 @@ async def handle_parse(
 
     if mode == "preview" and not force_reupload:
         publication = await _find_video_publication(raw_url, msg)
-        if publication and await _prompt_for_duplicate(msg, url, mode, publication):
+        if publication and await _prompt_for_duplicate(cli, msg, url, mode, publication):
             return
 
     if use_caching and not bypass_cache and (cached := await persistent_cache.get(raw_url)):
         logger.debug("file_id 缓存命中, 直接发送")
+        cached_source_url = _cache_entry_source_url(cached, raw_url)
+        if mode == "preview" and not force_reupload and _cache_entry_has_video(cached):
+            publication = await _find_video_publication(cached_source_url, msg)
+            if publication and await _prompt_for_duplicate(cli, msg, url, mode, publication):
+                return
         sent_messages = await _send_cached(msg, cached, raw_url, user_config=user_config)
         if _cache_entry_has_video(cached):
             await _record_video_publication(
-                raw_url,
+                cached_source_url,
                 msg,
                 sent_messages,
                 requester_user_id=requester_user_id,
@@ -551,13 +644,15 @@ async def handle_parse(
             if pipeline.waited:
                 logger.debug("Singleflight 等待完成, 重新检查缓存")
                 if not bypass_cache and (cached := await persistent_cache.get(raw_url)):
-                    publication = await _find_video_publication(raw_url, msg)
-                    if publication and await _prompt_for_duplicate(msg, url, mode, publication):
-                        return
+                    cached_source_url = _cache_entry_source_url(cached, raw_url)
+                    if mode == "preview" and not force_reupload and _cache_entry_has_video(cached):
+                        publication = await _find_video_publication(cached_source_url, msg)
+                        if publication and await _prompt_for_duplicate(cli, msg, url, mode, publication):
+                            return
                     sent_messages = await _send_cached(msg, cached, raw_url, user_config=user_config)
                     if _cache_entry_has_video(cached):
                         await _record_video_publication(
-                            raw_url,
+                            cached_source_url,
                             msg,
                             sent_messages,
                             requester_user_id=requester_user_id,
@@ -580,8 +675,15 @@ async def handle_parse(
             return
 
         parse_result = result.parse_result
+        source_url = await _resolve_result_source_url(url, raw_url, platform_id, parse_result)
         if result.engine != "flyinglife":
             await parse_cache.set(raw_url, parse_result)
+
+        if mode == "preview" and not force_reupload and parse_result.type == PostType.VIDEO:
+            publication = await _find_video_publication(source_url, msg)
+            if publication and await _prompt_for_duplicate(cli, msg, url, mode, publication):
+                await reporter.dismiss()
+                return
 
         # ── 富文本 → Telegraph ──
         if parse_result.type == PostType.RICHTEXT:
@@ -599,7 +701,11 @@ async def handle_parse(
             await persistent_cache.set(
                 raw_url,
                 CacheEntry(
-                    parse_result=CacheParseResult(title=parse_result.title, content=parse_result.content),
+                    parse_result=CacheParseResult(
+                        title=parse_result.title,
+                        content=parse_result.content,
+                        raw_url=source_url,
+                    ),
                     telegraph_url=ph_url,
                 ),
             )
@@ -629,7 +735,11 @@ async def handle_parse(
                 )
             )
             cache_entry = CacheEntry(
-                parse_result=CacheParseResult(title=parse_result.title, content=parse_result.content)
+                parse_result=CacheParseResult(
+                    title=parse_result.title,
+                    content=parse_result.content,
+                    raw_url=source_url,
+                )
             )
             await persistent_cache.set(raw_url, cache_entry)
             await reporter.dismiss()
@@ -651,7 +761,7 @@ async def handle_parse(
                 await persistent_cache.set(raw_url, send_result.cache_entry)
             if parse_result.type == PostType.VIDEO:
                 await _record_video_publication(
-                    raw_url,
+                    source_url,
                     msg,
                     send_result.messages,
                     requester_user_id=requester_user_id,
@@ -738,7 +848,11 @@ def _cache_media_from_message(m: Message) -> CacheMedia | None:
 
 def _make_cache_entry(parse_result: AnyParseResult, media_list: list[CacheMedia]) -> CacheEntry:
     return CacheEntry(
-        parse_result=CacheParseResult(title=parse_result.title, content=parse_result.content),
+        parse_result=CacheParseResult(
+            title=parse_result.title,
+            content=parse_result.content,
+            raw_url=parse_result.raw_url,
+        ),
         media=media_list,
     )
 
@@ -1068,7 +1182,7 @@ async def _send_cached(msg: Message, entry: CacheEntry, url: str, *, user_config
     caption = build_caption_by_str(
         entry.parse_result.title,
         entry.parse_result.content,
-        url,
+        _cache_entry_source_url(entry, url),
         entry.telegraph_url,
         hide_source=user_config.hide_source,
     )

@@ -29,7 +29,7 @@ def normalize_source_url(url: str) -> str:
     return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), path, query, ""))
 
 
-def make_content_key(url: str) -> str:
+def douyin_content_id(url: str) -> str | None:
     normalized = normalize_source_url(url)
     parts = urlsplit(normalized)
     host = (parts.hostname or "").lower()
@@ -38,7 +38,14 @@ def make_content_key(url: str) -> str:
     if is_douyin or is_iesdouyin:
         match = _DOUYIN_CONTENT_RE.search(parts.path)
         if match:
-            normalized = f"douyin:{match.group(1)}"
+            return match.group(1)
+    return None
+
+
+def make_content_key(url: str) -> str:
+    normalized = normalize_source_url(url)
+    if content_id := douyin_content_id(normalized):
+        normalized = f"douyin:{content_id}"
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
@@ -146,6 +153,13 @@ class PublicationHistory:
             requester_user_id=requester_user_id,
             published_at=published_at,
         )
+
+    async def remove(self, source_url: str, chat_id: int) -> bool:
+        async with get_session() as session:
+            return await MediaPublicationRepo(session).remove(
+                content_key=make_content_key(source_url),
+                chat_id=chat_id,
+            )
 
 
 @dataclass(frozen=True, slots=True)

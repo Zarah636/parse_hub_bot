@@ -62,3 +62,10 @@ class MediaPublicationRepo:
         publication.requester_user_id = requester_user_id
         publication.published_at = published_at
         return publication
+
+    async def remove(self, *, content_key: str, chat_id: int) -> bool:
+        publication = await self.get(content_key=content_key, chat_id=chat_id)
+        if publication is None:
+            return False
+        await self._session.delete(publication)
+        return True
