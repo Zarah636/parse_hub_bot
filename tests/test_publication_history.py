@@ -400,12 +400,14 @@ class DuplicateConfirmationTests(unittest.IsolatedAsyncioTestCase):
         query.answer.assert_awaited_once_with("这不是你的操作", show_alert=True)
 
     async def test_confirm_forces_real_redownload(self) -> None:
+        prepared_parse_result = cast(Any, object())
         pending = PendingDuplicateConfirmation(
             url="https://example.com/video/1",
             mode="preview",
             user_id=42,
             chat_id=-1001234567890,
             message_thread_id=88,
+            parse_result=prepared_parse_result,
         )
         message = build_message(chat_type=ChatType.SUPERGROUP, thread_id=88)
         message.edit_text = AsyncMock()  # type: ignore[method-assign]
@@ -439,6 +441,7 @@ class DuplicateConfirmationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(kwargs["bypass_cache"])
         self.assertTrue(kwargs["force_reupload"])
         self.assertEqual(kwargs["requester_user_id"], 42)
+        self.assertIs(kwargs["prepared_parse_result"], prepared_parse_result)
 
 
 if __name__ == "__main__":

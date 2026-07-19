@@ -251,6 +251,8 @@ async def _prompt_for_duplicate(
     url: str,
     mode: str,
     record: PublicationRecord,
+    *,
+    parse_result: AnyParseResult | None = None,
 ) -> bool:
     live_record = await _refresh_publication_record(cli, record)
     if live_record is None:
@@ -267,6 +269,7 @@ async def _prompt_for_duplicate(
         user_id=msg.from_user.id,
         chat_id=chat_id,
         message_thread_id=message_thread_id,
+        parse_result=parse_result,
     )
     token = await duplicate_confirmations.create(pending)
     if message_thread_id and record.message_thread_id == message_thread_id:
@@ -482,6 +485,7 @@ async def duplicate_media_callback(cli: Client, cq: CallbackQuery) -> None:
         bypass_cache=True,
         force_reupload=True,
         requester_user_id=pending.user_id,
+        prepared_parse_result=pending.parse_result,
         _t=t_[current.lang],
         user_config=current.config,
     )
@@ -505,6 +509,7 @@ async def _handle_parse_request(
     bypass_cache: bool = False,
     force_reupload: bool = False,
     requester_user_id: int | None = None,
+    prepared_parse_result: AnyParseResult | None = None,
     _t: PreLocaleSelector,
     user_config: UserConfig,
 ) -> None:
@@ -518,6 +523,7 @@ async def _handle_parse_request(
             bypass_cache=bypass_cache,
             force_reupload=force_reupload,
             requester_user_id=requester_user_id,
+            prepared_parse_result=prepared_parse_result,
             _t=_t,
             user_config=user_config,
         )
@@ -555,6 +561,7 @@ async def handle_parse(
     bypass_cache: bool = False,
     force_reupload: bool = False,
     requester_user_id: int | None = None,
+    prepared_parse_result: AnyParseResult | None = None,
     _t: PreLocaleSelector,
     user_config: UserConfig,
 ) -> None:
@@ -638,11 +645,18 @@ async def handle_parse(
             source_url = await _resolve_result_source_url(url, raw_url, platform_id, flyinglife_parse_result)
             if flyinglife_parse_result.type == PostType.VIDEO:
                 publication = await _find_video_publication(source_url, msg)
-                if publication and await _prompt_for_duplicate(cli, msg, url, mode, publication):
+                if publication and await _prompt_for_duplicate(
+                    cli,
+                    msg,
+                    url,
+                    mode,
+                    publication,
+                    parse_result=flyinglife_parse_result,
+                ):
                     await reporter.dismiss()
                     return
 
-    cached_parse_result = None if bypass_cache else await parse_cache.get(raw_url)
+    cached_parse_result = prepared_parse_result or (None if bypass_cache else await parse_cache.get(raw_url))
     with HybridParsePipeline(
         url,
         raw_url,
@@ -654,7 +668,7 @@ async def handle_parse(
         skip_download_threshold=SKIP_DOWNLOAD_THRESHOLD,
         gif_only_skip_download_count_threshold=GIF_ONLY_SKIP_DOWNLOAD_COUNT_THRESHOLD if mode == "preview" else 0,
         save_metadata=save_metadata,
-        flyinglife_parse_result=flyinglife_parse_result,
+        flyinglife_parse_result=flyinglife_parse_result or prepared_parse_result,
         skip_flyinglife=skip_flyinglife,
         _t=_t,
     ) as pipeline:

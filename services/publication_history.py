@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from parsehub.types import AnyParseResult
 from pyrogram.enums import ChatType
 from pyrogram.types import Message
 
@@ -169,6 +170,7 @@ class PendingDuplicateConfirmation:
     user_id: int
     chat_id: int
     message_thread_id: int
+    parse_result: AnyParseResult | None = None
 
 
 class DuplicateConfirmationStore:
