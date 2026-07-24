@@ -1,6 +1,8 @@
 from .cache import CacheEntry, CacheMedia, CacheMediaType, CacheParseResult, parse_cache, persistent_cache
 from .chat import ChatService
 from .forum_topic import ForumTopicService
+from .flyinglife import FlyingLifeService, flyinglife
+from .hybrid import HybridParsePipeline
 from .parser import ParseService
 from .pipeline import ParsePipeline, PipelineProgressCallback, PipelineResult, StatusReporter
 from .settings import (
@@ -37,6 +39,9 @@ __all__ = [
     "CacheMediaType",
     "CacheParseResult",
     "ParsePipeline",
+    "HybridParsePipeline",
+    "FlyingLifeService",
+    "flyinglife",
     "PipelineResult",
     "PipelineProgressCallback",
     "StatusReporter",

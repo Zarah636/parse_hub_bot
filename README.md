@@ -110,6 +110,29 @@ BOT_TOKEN=     # 机器人 Token，向 @BotFather 申请
 BOT_PROXY=     # Bot 连接 TG 使用的代理，例：http://127.0.0.1:7890
 ```
 
+### FlyingLife 优先解析（可选）
+
+启用后，命中指定平台的普通解析请求会先交给 FlyingLife。只有解析成功且全部媒体均通过 FlyingLife 代理下载完成，才进入 Bot 原有的文案、转码、分段和 Telegram 上传流程；解析、登录态、代理下载或媒体处理任一步失败，都会记录日志并立即回退到 Bot 原生 ParseHub 流水线。
+
+```dotenv
+FLYINGLIFE_ENABLED=true
+FLYINGLIFE_PLATFORMS=douyin
+FLYINGLIFE_BASE_URL=https://parse.flyinglife.cn
+FLYINGLIFE_CONCURRENCY=1
+# 也可以直接填写；该值优先于认证文件
+# FLYINGLIFE_SESSION_ID=
+```
+
+默认只启用已经验证的 `douyin` 单视频和图集。首次配置登录态：
+
+```bash
+uv run tools/flyinglife_auth.py
+# Docker 已运行时：
+docker exec -it parse-hub-bot python tools/flyinglife_auth.py --reauth
+```
+
+认证工具支持交互式邮箱登录或直接输入 Session ID，只保存验证成功的 Session ID 到 `data/config/flyinglife_auth.json`，不会保存邮箱和密码。请将该文件视为密钥，不要提交到 Git。
+
 ### 🌐 平台配置
 
 用于为各解析平台单独配置 **代理**和 **Cookie**，位于 `data/config/platform_config.yaml`

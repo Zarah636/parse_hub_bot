@@ -4,7 +4,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from dotenv import load_dotenv
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import make_url
 
@@ -45,6 +45,17 @@ class BotSettings(BaseSettings):
 
     demo_mode: bool = Field(default=False, description="启用演示模式")
 
+    flyinglife_enabled: bool = Field(default=False, description="启用 FlyingLife 优先解析")
+    flyinglife_base_url: str = Field(default="https://parse.flyinglife.cn")
+    flyinglife_session_id: SecretStr | None = Field(default=None)
+    flyinglife_platforms: str = Field(default="douyin", description="允许使用 FlyingLife 的平台 ID，逗号分隔")
+    flyinglife_parse_timeout: float = Field(default=20, gt=0)
+    flyinglife_download_timeout: float = Field(default=60, gt=0, description="代理下载单次读取超时，单位秒")
+    flyinglife_concurrency: int = Field(default=1, ge=1, le=5)
+    flyinglife_failure_threshold: int = Field(default=3, ge=1)
+    flyinglife_cooldown: float = Field(default=300, gt=0, description="熔断冷却时间，单位秒")
+    flyinglife_max_media_bytes: int = Field(default=4 * 1024**3, gt=0)
+
     def model_post_init(self, __context: Any) -> None:
         """模型初始化后的操作"""
         self.sessions_path.mkdir(parents=True, exist_ok=True)
@@ -61,6 +72,10 @@ class BotSettings(BaseSettings):
     @property
     def config_path(self) -> Path:
         return self.data_path / "config"
+
+    @property
+    def flyinglife_platform_id_set(self) -> set[str]:
+        return {item.strip().lower() for item in self.flyinglife_platforms.split(",") if item.strip()}
 
     @field_validator("bot_proxy", mode="before")
     @classmethod

@@ -22,7 +22,15 @@ from plugins.parse.context import GIF_ONLY_SKIP_DOWNLOAD_COUNT_THRESHOLD, ParseO
 from plugins.parse.reporters import MessageStatusReporter, disable_progress_on_report_forbidden
 from plugins.parse.sender import MessageSender, build_gif_button, send_cached, send_media, send_raw, send_zip
 from repo.settings import ParseMode
-from services import CacheEntry, CacheParseResult, ParsePipeline, ParseService, SettingsService, UserService
+from services import (
+    CacheEntry,
+    CacheParseResult,
+    HybridParsePipeline,
+    ParseService,
+    SettingsService,
+    UserService,
+    flyinglife,
+)
 from services.cache import parse_cache, persistent_cache
 from utils.helpers import to_list, with_request_id
 from utils.rate_limit import ParseRateLimitExceeded, parse_rate_limit
@@ -151,10 +159,21 @@ async def handle_parse(req: ParseRequest) -> bool:
     )
     sender = MessageSender(req.cli, req.msg, req.config)
     try:
-        raw_url = await ParseService().get_raw_url(req.url)
+        platform_id = ParseService().get_platform(req.url).id
     except Exception as e:
         await reporter.report_error(req.t_("获取原始链接"), e)
         return False
+
+    use_flyinglife = flyinglife.can_attempt(platform_id)
+    if use_flyinglife:
+        # FlyingLife 必须是第一条网络链路；失败时 HybridParsePipeline 会回退 ParseHub。
+        raw_url = req.url
+    else:
+        try:
+            raw_url = await ParseService().get_raw_url(req.url)
+        except Exception as e:
+            await reporter.report_error(req.t_("获取原始链接"), e)
+            return
 
     if options.use_caching and not req.bypass_cache and (cached := await persistent_cache.get(raw_url)):
         logger.debug("file_id 缓存命中, 直接发送")
@@ -168,11 +187,12 @@ async def handle_parse(req: ParseRequest) -> bool:
             return True
 
     cached_parse_result = None if req.bypass_cache else await parse_cache.get(raw_url)
-    with ParsePipeline(
+    with HybridParsePipeline(
         req.url,
         raw_url,
         reporter,
         parse_result=cached_parse_result,
+        platform_id=platform_id,
         singleflight=options.singleflight,
         skip_media_processing=options.skip_media_processing,
         gif_only_skip_download_count_threshold=options.gif_only_skip_download_count_threshold,
@@ -199,7 +219,8 @@ async def handle_parse(req: ParseRequest) -> bool:
             return False
 
         parse_result = result.parse_result
-        await parse_cache.set(raw_url, parse_result)
+        if result.engine != "flyinglife":
+            await parse_cache.set(raw_url, parse_result)
 
         if isinstance(parse_result, RichTextParseResult):
             # 富文本发送

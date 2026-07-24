@@ -12,7 +12,7 @@ from parsehub.types import AniRef, AnyParseResult, PostType, ProgressUnit
 
 from core import bs, pl_cfg
 from log import logger
-from services import ParseService
+from services.parser import ParseService
 from services.media import ProcessedMedia, process_media_files
 from services.media import progress as fmt_progress
 from utils.helpers import to_list
@@ -37,6 +37,7 @@ class PipelineResult:
     parse_result: AnyParseResult
     processed_list: list[ProcessedMedia] = field(default_factory=list)
     output_dir: Path | None = None
+    engine: str = "parsehub"
 
     def cleanup(self) -> None:
         if bs.debug_skip_cleanup:
