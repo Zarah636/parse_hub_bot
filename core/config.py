@@ -50,6 +50,7 @@ class BotSettings(BaseSettings):
     flyinglife_session_id: SecretStr | None = Field(default=None)
     flyinglife_platforms: str = Field(default="douyin", description="允许使用 FlyingLife 的平台 ID，逗号分隔")
     flyinglife_parse_timeout: float = Field(default=20, gt=0)
+    flyinglife_inline_parse_timeout: float = Field(default=5, gt=0, description="内联弹窗预解析超时，单位秒")
     flyinglife_download_timeout: float = Field(default=60, gt=0, description="代理下载单次读取超时，单位秒")
     flyinglife_concurrency: int = Field(default=1, ge=1, le=5)
     flyinglife_failure_threshold: int = Field(default=3, ge=1)

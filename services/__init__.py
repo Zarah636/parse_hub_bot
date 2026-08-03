@@ -1,7 +1,15 @@
-from .cache import CacheEntry, CacheMedia, CacheMediaType, CacheParseResult, parse_cache, persistent_cache
+from .cache import (
+    CacheEntry,
+    CacheMedia,
+    CacheMediaType,
+    CacheParseResult,
+    inline_flyinglife_cache,
+    parse_cache,
+    persistent_cache,
+)
 from .chat import ChatService
 from .forum_topic import ForumTopicService
-from .flyinglife import FlyingLifeService, flyinglife
+from .flyinglife import FlyingLifeInlineCandidate, FlyingLifeService, flyinglife
 from .hybrid import HybridParsePipeline
 from .parser import ParseService
 from .pipeline import ParsePipeline, PipelineProgressCallback, PipelineResult, StatusReporter
@@ -33,6 +41,7 @@ __all__ = [
     "ForumTopicMemberSettingsTarget",
     "ChannelSettingsTarget",
     "parse_cache",
+    "inline_flyinglife_cache",
     "persistent_cache",
     "CacheEntry",
     "CacheMedia",
@@ -41,6 +50,7 @@ __all__ = [
     "ParsePipeline",
     "HybridParsePipeline",
     "FlyingLifeService",
+    "FlyingLifeInlineCandidate",
     "flyinglife",
     "PipelineResult",
     "PipelineProgressCallback",

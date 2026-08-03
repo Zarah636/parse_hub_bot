@@ -112,13 +112,14 @@ BOT_PROXY=     # Bot 连接 TG 使用的代理，例：http://127.0.0.1:7890
 
 ### FlyingLife 优先解析（可选）
 
-启用后，命中指定平台的普通解析请求会先交给 FlyingLife。只有解析成功且全部媒体均通过 FlyingLife 代理下载完成，才进入 Bot 原有的文案、转码、分段和 Telegram 上传流程；解析、登录态、代理下载或媒体处理任一步失败，都会记录日志并立即回退到 Bot 原生 ParseHub 流水线。
+启用后，命中指定平台的普通解析请求会先交给 FlyingLife。只有解析成功且全部媒体均通过 FlyingLife 代理下载完成，才进入 Bot 原有的文案、转码、分段和 Telegram 上传流程；解析、登录态、代理下载或媒体处理任一步失败，都会记录日志并立即回退到 Bot 原生 ParseHub 流水线。内联解析也会优先用 FlyingLife 的文案和源站 CDN 缩略图构建弹窗，选中后再通过 FlyingLife 代理下载；任一阶段失败均回退 ParseHub。
 
 ```dotenv
 FLYINGLIFE_ENABLED=true
 FLYINGLIFE_PLATFORMS=douyin
 FLYINGLIFE_BASE_URL=https://parse.flyinglife.cn
 FLYINGLIFE_CONCURRENCY=1
+FLYINGLIFE_INLINE_PARSE_TIMEOUT=5
 # 也可以直接填写；该值优先于认证文件
 # FLYINGLIFE_SESSION_ID=
 ```

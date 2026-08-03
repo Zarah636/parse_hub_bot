@@ -195,4 +195,5 @@ class PersistentCache:
 
 
 parse_cache = TTLCache(ttl=5 * 60, maxsize=1000)  # 解析结果缓存 5 分钟
+inline_flyinglife_cache = TTLCache(ttl=5 * 60, maxsize=1000)  # 内联预览/代理下载候选对
 persistent_cache = PersistentCache(max_entries=bs.cache_max_entries, disable=bs.cache_disabled)

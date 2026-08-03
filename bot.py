@@ -13,7 +13,7 @@ from db.init import init_db
 from i18n import ISO639_MAP
 from log import logger, setup_logging
 from plugins.helpers import COMMANDS
-from services import flyinglife, parse_cache
+from services import flyinglife, inline_flyinglife_cache, parse_cache
 from utils.event_loop import setup_optimized_event_loop
 
 pillow_heif.register_heif_opener()
@@ -48,6 +48,7 @@ class Bot(Client):
 
         await flyinglife.initialize()
         parse_cache.start_cleanup()
+        inline_flyinglife_cache.start_cleanup()
         await super().start()
         await self.set_menu()
         return self

@@ -101,6 +101,14 @@ class FlyingLifeRunResult:
     output_dir: Path | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class FlyingLifeInlineCandidate:
+    """Pair the public inline preview with the authenticated proxy download result."""
+
+    preview_result: AnyParseResult
+    download_result: AnyParseResult
+
+
 ProgressCallback = Callable[[int, int, ProgressUnit], Awaitable[None]]
 
 
@@ -276,31 +284,64 @@ class FlyingLifeService:
         query = urlencode({"url": media_url, "referer": source_url, "type": media_type})
         return f"{self.base_url}/api/media_proxy.php?{query}"
 
-    async def parse(self, url: str, raw_url: str) -> AnyParseResult:
-        data = await self._api_request("/api/parse.php", json_body={"url": url})
+    async def _fetch_payload(self, url: str, *, timeout: float | None = None) -> FlyingLifePayload:
+        data = await self._api_request("/api/parse.php", json_body={"url": url}, timeout=timeout)
         try:
-            payload = FlyingLifePayload.model_validate(data)
+            return FlyingLifePayload.model_validate(data)
         except Exception as e:
             raise FlyingLifeParseError("解析结果格式异常") from e
 
+    def _build_result(
+        self,
+        payload: FlyingLifePayload,
+        url: str,
+        raw_url: str,
+        *,
+        proxy_media: bool,
+    ) -> AnyParseResult:
         if payload.music_list:
             raise FlyingLifeParseError("第一版暂不支持音频结果")
+
+        def media_url(value: str, media_type: str) -> str:
+            return self._proxy_url(value, url, media_type) if proxy_media else value
 
         videos = payload.video_list
         if videos:
             if len(videos) != 1:
                 raise FlyingLifeParseError("第一版暂不支持多视频结果")
-            cover_url = self._proxy_url(payload.images[0], url, "image") if payload.images else None
-            video_ref = VideoRef(url=self._proxy_url(videos[0], url, "video"), thumb_url=cover_url)
+            cover_url = media_url(payload.images[0], "image") if payload.images else None
+            video_ref = VideoRef(url=media_url(videos[0], "video"), thumb_url=cover_url)
             result: AnyParseResult = VideoParseResult(title=payload.title, content=payload.text, video=video_ref)
         elif payload.images:
-            image_refs = [ImageRef(url=self._proxy_url(item, url, "image")) for item in payload.images]
+            image_refs = [ImageRef(url=media_url(item, "image")) for item in payload.images]
             result = ImageParseResult(title=payload.title, content=payload.text, photo=image_refs)
         else:
             raise FlyingLifeParseError("没有解析到可用媒体")
 
         result.raw_url = raw_url
         return result
+
+    async def parse(self, url: str, raw_url: str) -> AnyParseResult:
+        payload = await self._fetch_payload(url)
+        return self._build_result(payload, url, raw_url, proxy_media=True)
+
+    async def parse_inline_candidate(self, url: str, raw_url: str) -> FlyingLifeInlineCandidate:
+        """Parse once and keep public CDN preview URLs separate from authenticated proxy URLs."""
+        if time.monotonic() < self._open_until:
+            raise FlyingLifeUnavailable("远程解析处于熔断冷却期")
+
+        async with self._semaphore:
+            try:
+                payload = await self._fetch_payload(url, timeout=bs.flyinglife_inline_parse_timeout)
+                preview_result = self._build_result(payload, url, raw_url, proxy_media=False)
+                download_result = self._build_result(payload, url, raw_url, proxy_media=True)
+            except BaseException as e:
+                if isinstance(e, Exception):
+                    self._record_failure(e)
+                raise
+
+        self._record_success()
+        return FlyingLifeInlineCandidate(preview_result=preview_result, download_result=download_result)
 
     async def _download_proxy(
         self,

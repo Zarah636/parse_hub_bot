@@ -45,10 +45,16 @@ from plugins.helpers import (
 )
 from plugins.parse.reporters import InlineStatusReporter
 from repo.settings import SettingsConfig
-from services import ParseService, SettingsService, UserService
-from services.cache import CacheEntry, CacheMediaType, parse_cache, persistent_cache
+from services import (
+    FlyingLifeInlineCandidate,
+    HybridParsePipeline,
+    ParseService,
+    SettingsService,
+    UserService,
+    flyinglife,
+)
+from services.cache import CacheEntry, CacheMediaType, inline_flyinglife_cache, parse_cache, persistent_cache
 from services.media import resolve_media_info
-from services.pipeline import ParsePipeline
 from utils.helpers import to_list, with_request_id
 
 logger = logger.bind(name="InlineParse")
@@ -58,6 +64,33 @@ DEFAULT_PARSE_RESULT_THUMB_URL = "https://telegra.ph/file/cdfdb65b83a4b7b2b6078.
 LINK_ICON_URL = "https://i.iij.li/i/20260627/6a3fb12066abb.png"
 LINK_ICON_WIDTH = 72
 LINK_ICON_HEIGHT = 72
+
+
+async def resolve_inline_preview(query: str, raw_url: str, platform_id: str) -> AnyParseResult:
+    cached_candidate = await inline_flyinglife_cache.get(raw_url)
+    if isinstance(cached_candidate, FlyingLifeInlineCandidate):
+        logger.debug("inline: FlyingLife 候选缓存命中")
+        return cached_candidate.preview_result
+
+    if flyinglife.can_attempt(platform_id):
+        try:
+            candidate = await flyinglife.parse_inline_candidate(query, raw_url)
+        except Exception as e:
+            logger.warning(f"inline FlyingLife 预解析失败, fallback ParseHub: {type(e).__name__}: {e}")
+        else:
+            await inline_flyinglife_cache.set(raw_url, candidate)
+            logger.info("inline 弹窗使用 FlyingLife 文案和源站 CDN 预览")
+            return candidate.preview_result
+
+    parse_result = await parse_cache.get(raw_url)
+    if parse_result is None:
+        parse_result = await ParseService().parse(query)
+        await parse_cache.set(raw_url, parse_result)
+    return parse_result
+
+
+def resolve_inline_video_cover(video_ref: VideoRef, config: SettingsConfig) -> str | None:
+    return str(video_ref.thumb_url) if config.video_cover and video_ref.thumb_url else None
 
 
 @Client.on_inline_query(~platform_filter(False))
@@ -82,7 +115,9 @@ async def inline_parse_tip(_: Client, inline_query: InlineQuery) -> None:
 @with_request_id
 async def call_inline_parse(cli: Client, inline_query: InlineQuery) -> None:
     logger.info(f"收到内联解析请求: query={inline_query.query}, from_user={inline_query.from_user.id}")
-    raw_url = await ParseService().get_raw_url(inline_query.query)
+    parse_service = ParseService()
+    platform_id = parse_service.get_platform(inline_query.query).id
+    raw_url = await parse_service.get_raw_url(inline_query.query)
     async with get_session() as session:
         lang = await UserService(session).get_lang(inline_query.from_user.id)
         config = await SettingsService(session).get_config_by_user(inline_query.from_user.id)
@@ -92,10 +127,7 @@ async def call_inline_parse(cli: Client, inline_query: InlineQuery) -> None:
         await inline_query.answer(results[:50], cache_time=60)
         return
 
-    parse_result = await parse_cache.get(raw_url)
-    if parse_result is None:
-        parse_result = await ParseService().parse(inline_query.query)
-        await parse_cache.set(raw_url, parse_result)
+    parse_result = await resolve_inline_preview(inline_query.query, raw_url, platform_id)
 
     results = await build_inline_results(parse_result, cli, lang, config)
     logger.debug(f"inline 查询完成, 返回 {len(results)} 个结果")
@@ -118,33 +150,54 @@ async def inline_result_download(cli: Client, chosen_result: ChosenInlineResult)
         return
     query = chosen_result.query
     logger.debug(f"inline 下载触发: media_index={media_index}, query={query}")
-    raw_url = await ParseService().get_raw_url(query)
+    parse_service = ParseService()
+    platform_id = parse_service.get_platform(query).id
+    raw_url = await parse_service.get_raw_url(query)
 
-    cached_result = await parse_cache.get(raw_url)
-    logger.debug(f"缓存命中: {cached_result is not None}")
+    parsehub_cached_result = await parse_cache.get(raw_url)
+    cached_candidate = await inline_flyinglife_cache.get(raw_url)
+    candidate = cached_candidate if isinstance(cached_candidate, FlyingLifeInlineCandidate) else None
+    logger.debug(
+        f"内联下载候选: flyinglife={candidate is not None}, parsehub_cache={parsehub_cached_result is not None}"
+    )
 
-    caption = build_caption(cached_result, config=config) if cached_result else ""
+    caption_result = candidate.preview_result if candidate else parsehub_cached_result
+    caption = build_caption(caption_result, config=config) if caption_result else ""
     reporter = InlineStatusReporter(cli, inline_message_id, caption, t=_t, user_config=config)
-    with ParsePipeline(query, raw_url, reporter, parse_result=cached_result, singleflight=False, t=_t) as pipeline:
+    with HybridParsePipeline(
+        query,
+        raw_url,
+        reporter,
+        parse_result=parsehub_cached_result,
+        platform_id=platform_id,
+        singleflight=False,
+        download_video_cover=config.video_cover,
+        flyinglife_parse_result=candidate.download_result if candidate else None,
+        t=_t,
+    ) as pipeline:
         if (result := await pipeline.run()) is None:
             return
 
         parse_result = result.parse_result
+        logger.info(f"inline 下载引擎: {result.engine}")
         caption = build_caption(parse_result, config=config)
 
         # ── 上传 ──
         await reporter.report(_t("上 传 中..."))
 
-        processed = result.processed_list[media_index]
-        video_ref = parse_result.media[media_index] if isinstance(parse_result.media, Sequence) else parse_result.media
-
         try:
+            processed = result.processed_list[media_index]
+            video_ref = (
+                parse_result.media[media_index] if isinstance(parse_result.media, Sequence) else parse_result.media
+            )
+            if not isinstance(video_ref, VideoRef):
+                raise TypeError("内联下载结果不是视频")
             file_paths = processed.output_paths or [processed.source.path]
             file_path_str = str(file_paths[0])
             logger.debug(f"inline 上传文件: {file_path_str}")
             width, height, duration = resolve_media_info(processed, file_path_str)
 
-            video_cover = str(video_ref.thumb_url) if video_ref and video_ref.thumb_url else None
+            video_cover = resolve_inline_video_cover(video_ref, config)
             media = (
                 InputMediaVideo(
                     file_path_str,

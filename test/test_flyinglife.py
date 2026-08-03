@@ -12,6 +12,7 @@ os.environ.setdefault("BOT_TOKEN", "1:test")
 
 from parsehub.types import ImageParseResult, VideoParseResult, VideoRef  # noqa: E402
 
+from core import bs  # noqa: E402
 from services.flyinglife import (  # noqa: E402
     FLYINGLIFE_USER_AGENT,
     FlyingLifeDownloadError,
@@ -74,6 +75,40 @@ class FlyingLifeParseTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/api/media_proxy.php?", result.media.url)
         self.assertIn("type=video", result.media.url)
         self.assertIn("type=image", result.media.thumb_url or "")
+
+    async def test_inline_candidate_separates_public_preview_and_private_download(self) -> None:
+        service = FlyingLifeService()
+        api_request = AsyncMock(
+            return_value={
+                "title": "Inline title",
+                "text": "Inline content",
+                "images": ["https://p11-sign.douyinpic.com/cover.webp?x-signature=preview"],
+                "videos": ["https://v5-default.365yg.com/video.mp4?token=download"],
+            }
+        )
+        service._api_request = api_request  # type: ignore[method-assign]
+
+        candidate = await service.parse_inline_candidate(
+            "https://v.douyin.com/example/", "https://www.douyin.com/video/1"
+        )
+
+        self.assertIsInstance(candidate.preview_result, VideoParseResult)
+        self.assertIsInstance(candidate.download_result, VideoParseResult)
+        preview = candidate.preview_result.media
+        download = candidate.download_result.media
+        self.assertIsInstance(preview, VideoRef)
+        self.assertIsInstance(download, VideoRef)
+        self.assertEqual(preview.thumb_url, "https://p11-sign.douyinpic.com/cover.webp?x-signature=preview")
+        self.assertEqual(preview.url, "https://v5-default.365yg.com/video.mp4?token=download")
+        self.assertIn("/api/media_proxy.php?", download.thumb_url or "")
+        self.assertIn("type=image", download.thumb_url or "")
+        self.assertIn("/api/media_proxy.php?", download.url)
+        self.assertIn("type=video", download.url)
+        api_request.assert_awaited_once_with(
+            "/api/parse.php",
+            json_body={"url": "https://v.douyin.com/example/"},
+            timeout=bs.flyinglife_inline_parse_timeout,
+        )
 
     async def test_douyin_gallery_preserves_image_order(self) -> None:
         service = FlyingLifeService()
