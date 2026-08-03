@@ -195,6 +195,7 @@ async def handle_parse(req: ParseRequest) -> bool:
         platform_id=platform_id,
         singleflight=options.singleflight,
         skip_media_processing=options.skip_media_processing,
+        download_video_cover=req.mode == ParseMode.PREVIEW and req.config.video_cover,
         gif_only_skip_download_count_threshold=options.gif_only_skip_download_count_threshold,
         save_metadata=options.save_metadata,
         t=req.t_,

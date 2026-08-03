@@ -351,6 +351,7 @@ class FlyingLifeService:
         parse_result: AnyParseResult,
         progress: ProgressCallback | None = None,
         *,
+        download_video_cover: bool = True,
         save_metadata: bool = False,
     ) -> DownloadResult:
         digest = hashlib.sha256(parse_result.raw_url.encode()).hexdigest()[:12]
@@ -362,10 +363,15 @@ class FlyingLifeService:
 
         try:
             cover_url = media_refs[0].thumb_url if media_refs and isinstance(media_refs[0], VideoRef) else None
-            if cover_url:
+            if download_video_cover and cover_url:
                 cover_path = output_dir / "cover.jpg"
-                await self._download_proxy(cover_url, cover_path, "image")
-                media_refs[0].thumb_url = str(cover_path)
+                try:
+                    await self._download_proxy(cover_url, cover_path, "image")
+                except FlyingLifeDownloadError as e:
+                    logger.warning(f"FlyingLife 视频封面下载失败, 继续处理视频: {e}")
+                    media_refs[0].thumb_url = None
+                else:
+                    media_refs[0].thumb_url = str(cover_path)
 
             for index, media_ref in enumerate(media_refs, start=1):
                 if isinstance(media_ref, ImageRef):
@@ -425,6 +431,7 @@ class FlyingLifeService:
         reporter: FlyingLifeReporter,
         *,
         skip_media_processing: bool,
+        download_video_cover: bool,
         save_metadata: bool,
         _t: PreLocaleSelector,
         prepared_result: AnyParseResult | None = None,
@@ -449,7 +456,12 @@ class FlyingLifeService:
                     if text:
                         await reporter.report(text)
 
-                download_result = await self.download(parse_result, progress, save_metadata=save_metadata)
+                download_result = await self.download(
+                    parse_result,
+                    progress,
+                    download_video_cover=download_video_cover,
+                    save_metadata=save_metadata,
+                )
                 if skip_media_processing:
                     processed_list = [
                         ProcessedMedia(item, [Path(item.path)])

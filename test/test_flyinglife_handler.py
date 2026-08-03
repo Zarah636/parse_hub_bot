@@ -26,9 +26,16 @@ class FlyingLifeHandlerTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def run_until_pipeline(
-        self, *, use_flyinglife: bool, raw_url: str | None = None
+        self,
+        *,
+        use_flyinglife: bool,
+        raw_url: str | None = None,
+        mode: ParseMode = ParseMode.PREVIEW,
+        video_cover: bool = True,
     ) -> tuple[SimpleNamespace, MagicMock, MagicMock]:
         req = self.build_request()
+        req.mode = mode
+        req.config.video_cover = video_cover
         parse_service = MagicMock()
         parse_service.get_platform.return_value = SimpleNamespace(id="douyin")
         parse_service.get_raw_url = AsyncMock(return_value=raw_url)
@@ -65,6 +72,21 @@ class FlyingLifeHandlerTests(unittest.IsolatedAsyncioTestCase):
         kwargs = hybrid_pipeline.call_args.kwargs
         self.assertEqual(args[1], req.url)
         self.assertEqual(kwargs["platform_id"], "douyin")
+        self.assertEqual(kwargs["download_video_cover"], req.config.video_cover)
+
+    async def test_disabled_video_cover_is_passed_to_flyinglife(self) -> None:
+        _, _, hybrid_pipeline = await self.run_until_pipeline(use_flyinglife=True, video_cover=False)
+        self.assertFalse(hybrid_pipeline.call_args.kwargs["download_video_cover"])
+
+    async def test_raw_and_zip_do_not_download_video_cover(self) -> None:
+        for mode in (ParseMode.RAW, ParseMode.ZIP):
+            with self.subTest(mode=mode):
+                _, _, hybrid_pipeline = await self.run_until_pipeline(
+                    use_flyinglife=True,
+                    mode=mode,
+                    video_cover=True,
+                )
+                self.assertFalse(hybrid_pipeline.call_args.kwargs["download_video_cover"])
 
     async def test_disabled_flyinglife_uses_parsehub_raw_url(self) -> None:
         raw_url = "https://www.douyin.com/video/123"

@@ -26,6 +26,7 @@ class HybridParsePipeline:
         platform_id: str,
         singleflight: bool = True,
         skip_media_processing: bool = False,
+        download_video_cover: bool = True,
         skip_download_threshold: int = 0,
         gif_only_skip_download_count_threshold: int = 0,
         save_metadata: bool = False,
@@ -40,6 +41,7 @@ class HybridParsePipeline:
         self._platform_id = platform_id
         self._singleflight = singleflight
         self._skip_media_processing = skip_media_processing
+        self._download_video_cover = download_video_cover
         self._skip_download_threshold = skip_download_threshold
         self._gif_threshold = gif_only_skip_download_count_threshold
         self._save_metadata = save_metadata
@@ -101,6 +103,7 @@ class HybridParsePipeline:
                 self._raw_url,
                 self._reporter,
                 skip_media_processing=self._skip_media_processing,
+                download_video_cover=self._download_video_cover,
                 save_metadata=self._save_metadata,
                 _t=self._t,
                 prepared_result=self._flyinglife_parse_result,

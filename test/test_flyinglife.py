@@ -2,7 +2,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 
@@ -160,6 +160,48 @@ class FlyingLifeParseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(requests), 1)
         self.assertEqual(requests[0].headers["X-Session-Id"], "private-session")
         self.assertEqual(requests[0].headers["User-Agent"], FLYINGLIFE_USER_AGENT)
+
+    async def test_disabled_video_cover_is_not_downloaded(self) -> None:
+        service = FlyingLifeService()
+        parse_result = VideoParseResult(
+            video=VideoRef(url="https://example.com/video.mp4", thumb_url="https://example.com/cover.jpg")
+        )
+        parse_result.raw_url = "https://www.douyin.com/video/1"
+
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            patch("services.flyinglife.bs.download_dir", Path(temp_dir)),
+            patch("services.flyinglife.VideoFile", side_effect=lambda path: MagicMock(path=path)),
+            patch.object(service, "_download_proxy", AsyncMock()) as download_proxy,
+        ):
+            result = await service.download(parse_result, download_video_cover=False)
+
+        download_proxy.assert_awaited_once()
+        assert download_proxy.await_args is not None
+        self.assertEqual(download_proxy.await_args.args[2], "video")
+        self.assertEqual(result.media.path.name, "001.mp4")
+
+    async def test_video_cover_failure_does_not_abort_video_download(self) -> None:
+        service = FlyingLifeService()
+        video_ref = VideoRef(url="https://example.com/video.mp4", thumb_url="https://example.com/cover.jpg")
+        parse_result = VideoParseResult(video=video_ref)
+        parse_result.raw_url = "https://www.douyin.com/video/1"
+
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            patch("services.flyinglife.bs.download_dir", Path(temp_dir)),
+            patch("services.flyinglife.VideoFile", side_effect=lambda path: MagicMock(path=path)),
+            patch.object(
+                service,
+                "_download_proxy",
+                AsyncMock(side_effect=[FlyingLifeDownloadError("cover failed"), None]),
+            ) as download_proxy,
+        ):
+            result = await service.download(parse_result, download_video_cover=True)
+
+        self.assertEqual(download_proxy.await_count, 2)
+        self.assertIsNone(video_ref.thumb_url)
+        self.assertEqual(result.media.path.name, "001.mp4")
 
 
 if __name__ == "__main__":
