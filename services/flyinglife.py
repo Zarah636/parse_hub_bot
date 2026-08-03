@@ -62,6 +62,7 @@ class FlyingLifeReporter(Protocol):
 
 
 class FlyingLifePayload(BaseModel):
+    title: str = ""
     text: str = ""
     images: list[str] = Field(default_factory=list)
     videos: list[str] = Field(default_factory=list)
@@ -69,7 +70,7 @@ class FlyingLifePayload(BaseModel):
     musics: list[str] = Field(default_factory=list)
     music: str | None = None
 
-    @field_validator("text", mode="before")
+    @field_validator("title", "text", mode="before")
     @classmethod
     def normalize_text(cls, value: Any) -> Any:
         return "" if value is None else value
@@ -291,10 +292,10 @@ class FlyingLifeService:
                 raise FlyingLifeParseError("第一版暂不支持多视频结果")
             cover_url = self._proxy_url(payload.images[0], url, "image") if payload.images else None
             video_ref = VideoRef(url=self._proxy_url(videos[0], url, "video"), thumb_url=cover_url)
-            result: AnyParseResult = VideoParseResult(content=payload.text, video=video_ref)
+            result: AnyParseResult = VideoParseResult(title=payload.title, content=payload.text, video=video_ref)
         elif payload.images:
             image_refs = [ImageRef(url=self._proxy_url(item, url, "image")) for item in payload.images]
-            result = ImageParseResult(content=payload.text, photo=image_refs)
+            result = ImageParseResult(title=payload.title, content=payload.text, photo=image_refs)
         else:
             raise FlyingLifeParseError("没有解析到可用媒体")
 

@@ -14,6 +14,7 @@ from repo.settings import ParseMode  # noqa: E402
 class FlyingLifeHandlerTests(unittest.IsolatedAsyncioTestCase):
     def build_request(self) -> SimpleNamespace:
         return SimpleNamespace(
+            cli=MagicMock(),
             url="https://v.douyin.com/example/",
             mode=ParseMode.PREVIEW,
             bypass_cache=False,
@@ -24,7 +25,9 @@ class FlyingLifeHandlerTests(unittest.IsolatedAsyncioTestCase):
             chat_id=-1001,
         )
 
-    async def run_until_pipeline(self, *, use_flyinglife: bool, raw_url: str | None = None):
+    async def run_until_pipeline(
+        self, *, use_flyinglife: bool, raw_url: str | None = None
+    ) -> tuple[SimpleNamespace, MagicMock, MagicMock]:
         req = self.build_request()
         parse_service = MagicMock()
         parse_service.get_platform.return_value = SimpleNamespace(id="douyin")
@@ -50,7 +53,7 @@ class FlyingLifeHandlerTests(unittest.IsolatedAsyncioTestCase):
             patch.object(handlers.parse_cache, "get", AsyncMock(return_value=None)),
             patch.object(handlers, "HybridParsePipeline", return_value=pipeline) as hybrid_pipeline,
         ):
-            await handlers.handle_parse.__wrapped__(req)
+            await handlers.handle_parse.__wrapped__(req)  # type: ignore[attr-defined]
 
         return req, parse_service, hybrid_pipeline
 

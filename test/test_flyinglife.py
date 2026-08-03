@@ -41,6 +41,21 @@ class FlyingLifeParseTests(unittest.IsolatedAsyncioTestCase):
         parse.assert_awaited_once()
         download.assert_not_awaited()
 
+    async def test_title_is_preserved(self) -> None:
+        service = FlyingLifeService()
+        service._api_request = AsyncMock(  # type: ignore[method-assign]
+            return_value={
+                "title": "Example title",
+                "text": "Example content",
+                "videos": ["https://example.com/video.mp4"],
+            }
+        )
+
+        result = await service.parse("https://v.douyin.com/example/", "https://www.douyin.com/video/1")
+
+        self.assertIsInstance(result, VideoParseResult)
+        self.assertEqual(result.title, "Example title")
+
     async def test_douyin_video_uses_proxy_and_keeps_cover_private(self) -> None:
         service = FlyingLifeService()
         service._api_request = AsyncMock(  # type: ignore[method-assign]

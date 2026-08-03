@@ -173,7 +173,7 @@ async def handle_parse(req: ParseRequest) -> bool:
             raw_url = await ParseService().get_raw_url(req.url)
         except Exception as e:
             await reporter.report_error(req.t_("获取原始链接"), e)
-            return
+            return False
 
     if options.use_caching and not req.bypass_cache and (cached := await persistent_cache.get(raw_url)):
         logger.debug("file_id 缓存命中, 直接发送")
