@@ -4,7 +4,7 @@ from typing import Any
 
 from easy_ai18n import PreLocaleSelector
 from pyrogram import Client
-from pyrogram.errors import FloodWait, Forbidden, SlowmodeWait
+from pyrogram.errors import FloodWait, Forbidden, MessageNotModified, SlowmodeWait
 from pyrogram.types import LinkPreviewOptions, Message
 
 from core import bs
@@ -85,7 +85,7 @@ class MessageStatusReporter(StatusReporter):
             else:
                 if self._msg.text != text:
                     await self._msg.edit_text(text, **kwargs)
-        except (FloodWait, SlowmodeWait):
+        except (FloodWait, SlowmodeWait, MessageNotModified):
             pass
         except Forbidden as e:
             logger.warning(f"状态消息发送失败, Bot 无权限: {e}")
