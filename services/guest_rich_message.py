@@ -2,11 +2,12 @@ import mimetypes
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from parsehub.types import AniFile, ImageFile, LivePhotoFile, VideoFile
 from pyrogram import Client, raw, utils
 from pyrogram.file_id import FileId, FileType, ThumbnailSource
+from pyrogram.types import InputMessageContent
 
 from services.cache import CacheEntry, CacheMedia, CacheMediaType
 from services.media import resolve_media_info
@@ -31,6 +32,22 @@ class RichMediaKind(StrEnum):
 
 class RichMessageUnsupported(ValueError):
     pass
+
+
+class RawRichMessageContent(InputMessageContent):
+    """Adapt a prepared MTProto rich message for an inline/guest result."""
+
+    def __init__(self, message: raw.types.InputRichMessage) -> None:
+        super().__init__()
+        self.message = message
+
+    async def write(self, client: Client, reply_markup: Any) -> raw.types.InputBotInlineMessageRichMessage:
+        if reply_markup:
+            return raw.types.InputBotInlineMessageRichMessage(
+                rich_message=self.message,
+                reply_markup=cast(raw.types.ReplyInlineMarkup, await reply_markup.write(client)),
+            )
+        return raw.types.InputBotInlineMessageRichMessage(rich_message=self.message)
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,18 +272,6 @@ def assemble_rich_message(
             [item.cache_media for item in prepared if item.cache_media is not None]
             if all(item.cache_media is not None for item in prepared)
             else None
-        ),
-    )
-
-
-async def edit_inline_rich_message(cli: Client, inline_message_id: str, message: raw.types.InputRichMessage) -> bool:
-    unpacked = utils.unpack_inline_message_id(inline_message_id)
-    session = await cli.get_session(unpacked.dc_id, is_media=True)
-    return cast(
-        bool,
-        await session.invoke(
-            raw.functions.messages.EditInlineBotMessage(id=unpacked, rich_message=message),
-            sleep_threshold=cli.sleep_threshold,
         ),
     )
 
