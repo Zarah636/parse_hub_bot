@@ -179,21 +179,28 @@ def assemble_rich_message(
         raise ValueError("media source and prepared media counts differ")
 
     blocks: list[raw.base.PageBlock] = []
-    text_blocks: list[raw.base.PageBlock] = []
     title = (title or "").strip()[:512]
     content = (content or "").strip()[:30000]
     if not hide_title and not hide_desc and equivalent_caption_text(title, content):
         title = ""
-    # Media posts follow Telegram's caption convention and do not render a
-    # separate heading. Text-only articles keep their title above the body.
-    if title and not hide_title and not media_sources:
+
+    layout = choose_layout(media_sources)
+    # Text-only articles use ordinary heading/paragraph blocks. Media posts
+    # must put their copy in PageCaption; Telegram clients can omit a standalone
+    # paragraph placed after a collage or slideshow.
+    if title and not hide_title and layout is None:
         # Outgoing Rich Messages support section headings, but not the legacy
         # Instant View PageBlockTitle block.
-        text_blocks.append(raw.types.PageBlockHeading1(text=raw.types.TextPlain(text=title)))
-    if content and not hide_desc:
-        text_blocks.append(raw.types.PageBlockParagraph(text=raw.types.TextPlain(text=content)))
+        blocks.append(raw.types.PageBlockHeading1(text=raw.types.TextPlain(text=title)))
+    if content and not hide_desc and layout is None:
+        blocks.append(raw.types.PageBlockParagraph(text=raw.types.TextPlain(text=content)))
 
     empty_caption = raw.types.PageCaption(text=raw.types.TextEmpty(), credit=raw.types.TextEmpty())
+    media_caption_text = content if content and not hide_desc else title if title and not hide_title else ""
+    media_caption = raw.types.PageCaption(
+        text=raw.types.TextPlain(text=media_caption_text) if media_caption_text else raw.types.TextEmpty(),
+        credit=raw.types.TextEmpty(),
+    )
     media_blocks: list[raw.base.PageBlock] = []
     photos: list[raw.base.InputPhoto] = []
     documents: list[raw.base.InputDocument] = []
@@ -202,7 +209,12 @@ def assemble_rich_message(
             if not isinstance(item.media, raw.types.InputPhoto):
                 raise TypeError("photo block requires InputPhoto")
             photos.append(item.media)
-            media_blocks.append(raw.types.PageBlockPhoto(photo_id=item.media.id, caption=empty_caption))
+            media_blocks.append(
+                raw.types.PageBlockPhoto(
+                    photo_id=item.media.id,
+                    caption=media_caption if layout == RichLayout.SINGLE else empty_caption,
+                )
+            )
         else:
             if not isinstance(item.media, raw.types.InputDocument):
                 raise TypeError("video block requires InputDocument")
@@ -210,22 +222,18 @@ def assemble_rich_message(
             media_blocks.append(
                 raw.types.PageBlockVideo(
                     video_id=item.media.id,
-                    caption=empty_caption,
+                    caption=media_caption if layout == RichLayout.SINGLE else empty_caption,
                     autoplay=item.kind == RichMediaKind.ANIMATION,
                     loop=item.kind == RichMediaKind.ANIMATION,
                 )
             )
 
-    layout = choose_layout(media_sources)
     if layout == RichLayout.SINGLE:
         blocks.extend(media_blocks)
     elif layout == RichLayout.COLLAGE:
-        blocks.append(raw.types.PageBlockCollage(items=media_blocks, caption=empty_caption))
+        blocks.append(raw.types.PageBlockCollage(items=media_blocks, caption=media_caption))
     elif layout == RichLayout.SLIDESHOW:
-        blocks.append(raw.types.PageBlockSlideshow(items=media_blocks, caption=empty_caption))
-
-    # Match ordinary Telegram media captions: media first, text below it.
-    blocks.extend(text_blocks)
+        blocks.append(raw.types.PageBlockSlideshow(items=media_blocks, caption=media_caption))
 
     if source_url and not hide_source:
         blocks.append(
