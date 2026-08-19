@@ -10,13 +10,13 @@ os.environ.setdefault("API_HASH", "test")
 os.environ.setdefault("BOT_TOKEN", "1:test")
 
 from pyrogram import raw  # noqa: E402
-from pyrogram.types import Message  # noqa: E402
+from pyrogram.types import InputMediaPhoto, InputMediaVideo, Message  # noqa: E402
 
-from plugins.guest_parse import extract_guest_url, guest_parse  # noqa: E402
+from plugins.guest_parse import edit_guest_result, extract_guest_url, guest_parse  # noqa: E402
 from plugins.helpers import COMMANDS, build_start_text  # noqa: E402
 from repo.settings import SettingsConfig  # noqa: E402
 from services import CacheEntry, CacheMedia, CacheMediaType, CacheParseResult  # noqa: E402
-from services.guest_rich_message import RawRichMessageContent  # noqa: E402
+from services.guest_rich_message import RichLayout, RichMessageBuild  # noqa: E402
 
 
 class FakeSessionContext(AbstractAsyncContextManager[object]):
@@ -56,7 +56,109 @@ class GuestParseTests(unittest.TestCase):
 
 
 class GuestParseAsyncTests(unittest.IsolatedAsyncioTestCase):
-    async def _run_cached_guest(self, *, use_flyinglife: bool) -> tuple[MagicMock, MagicMock, object]:
+    async def test_single_video_uses_legacy_inline_media(self) -> None:
+        cli = MagicMock()
+        cli.edit_inline_media = AsyncMock(return_value=True)
+        rich = RichMessageBuild(
+            message=raw.types.InputRichMessage(blocks=[raw.types.PageBlockDivider()]),
+            layout=RichLayout.SINGLE,
+            media_count=1,
+            cache_media=[CacheMedia(type=CacheMediaType.VIDEO, file_id="video-file-id")],
+        )
+
+        with patch("plugins.guest_parse.edit_inline_rich_message", AsyncMock()) as edit_rich:
+            delivery = await edit_guest_result(
+                cli,
+                "inline-id",
+                rich,
+                "caption",
+                multi_media_notice="notice",
+            )
+
+        self.assertEqual(delivery, "standard-video")
+        edit_rich.assert_not_awaited()
+        cli.edit_inline_media.assert_awaited_once()
+        assert cli.edit_inline_media.await_args is not None
+        self.assertIsInstance(cli.edit_inline_media.await_args.args[1], InputMediaVideo)
+
+    async def test_single_photo_uses_legacy_inline_media(self) -> None:
+        cli = MagicMock()
+        cli.edit_inline_media = AsyncMock(return_value=True)
+        rich = RichMessageBuild(
+            message=raw.types.InputRichMessage(blocks=[raw.types.PageBlockDivider()]),
+            layout=RichLayout.SINGLE,
+            media_count=1,
+            cache_media=[CacheMedia(type=CacheMediaType.PHOTO, file_id="photo-file-id")],
+        )
+
+        with patch("plugins.guest_parse.edit_inline_rich_message", AsyncMock()) as edit_rich:
+            delivery = await edit_guest_result(
+                cli,
+                "inline-id",
+                rich,
+                "caption",
+                multi_media_notice="notice",
+            )
+
+        self.assertEqual(delivery, "standard-photo")
+        edit_rich.assert_not_awaited()
+        assert cli.edit_inline_media.await_args is not None
+        self.assertIsInstance(cli.edit_inline_media.await_args.args[1], InputMediaPhoto)
+
+    async def test_photo_album_keeps_rich_layout(self) -> None:
+        cli = MagicMock()
+        rich = RichMessageBuild(
+            message=raw.types.InputRichMessage(blocks=[raw.types.PageBlockDivider()]),
+            layout=RichLayout.COLLAGE,
+            media_count=2,
+            cache_media=[
+                CacheMedia(type=CacheMediaType.PHOTO, file_id="photo-1"),
+                CacheMedia(type=CacheMediaType.PHOTO, file_id="photo-2"),
+            ],
+        )
+
+        with patch("plugins.guest_parse.edit_inline_rich_message", AsyncMock(return_value=True)) as edit_rich:
+            delivery = await edit_guest_result(
+                cli,
+                "inline-id",
+                rich,
+                "caption",
+                multi_media_notice="notice",
+            )
+
+        self.assertEqual(delivery, "rich-collage")
+        edit_rich.assert_awaited_once_with(cli, "inline-id", rich.message)
+
+    async def test_mixed_album_falls_back_to_one_video_with_notice(self) -> None:
+        cli = MagicMock()
+        cli.edit_inline_media = AsyncMock(return_value=True)
+        rich = RichMessageBuild(
+            message=raw.types.InputRichMessage(blocks=[raw.types.PageBlockDivider()]),
+            layout=RichLayout.SLIDESHOW,
+            media_count=2,
+            cache_media=[
+                CacheMedia(type=CacheMediaType.PHOTO, file_id="photo-file-id"),
+                CacheMedia(type=CacheMediaType.VIDEO, file_id="video-file-id"),
+            ],
+        )
+
+        with patch("plugins.guest_parse.edit_inline_rich_message", AsyncMock()) as edit_rich:
+            delivery = await edit_guest_result(
+                cli,
+                "inline-id",
+                rich,
+                "caption",
+                multi_media_notice="notice",
+            )
+
+        self.assertEqual(delivery, "standard-video")
+        edit_rich.assert_not_awaited()
+        assert cli.edit_inline_media.await_args is not None
+        media = cli.edit_inline_media.await_args.args[1]
+        self.assertIsInstance(media, InputMediaVideo)
+        self.assertIn("notice", media.caption)
+
+    async def _run_cached_guest(self, *, use_flyinglife: bool) -> tuple[MagicMock, MagicMock, MagicMock]:
         url = "https://example.com/post"
         raw_url = "https://example.com/canonical"
         parser = MagicMock()
@@ -71,6 +173,7 @@ class GuestParseAsyncTests(unittest.IsolatedAsyncioTestCase):
         settings_service.get_config_by_user = AsyncMock(return_value=SettingsConfig())
         cli = MagicMock()
         cli.answer_guest_query = AsyncMock(return_value=SimpleNamespace(inline_message_id="inline-id"))
+        cli.edit_inline_text = AsyncMock()
         message = cast(
             Message,
             SimpleNamespace(
@@ -80,6 +183,8 @@ class GuestParseAsyncTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
         cached = CacheEntry(parse_result=CacheParseResult(title="Cached", content="Body"))
+        edit_rich = AsyncMock(return_value=True)
+
         with (
             patch("plugins.guest_parse.get_session", return_value=FakeSessionContext()),
             patch("plugins.guest_parse.UserService", return_value=user_service),
@@ -87,16 +192,16 @@ class GuestParseAsyncTests(unittest.IsolatedAsyncioTestCase):
             patch("plugins.guest_parse.ParseService", return_value=parse_service),
             patch("plugins.guest_parse.flyinglife.should_attempt", return_value=use_flyinglife),
             patch("plugins.guest_parse.persistent_cache.get", AsyncMock(return_value=cached)) as cache_get,
+            patch("plugins.guest_parse.edit_inline_rich_message", edit_rich),
             patch("plugins.guest_parse.t_", {"test": lambda text: text}),
         ):
             await guest_parse(cli, message)
 
         cache_get.assert_awaited_once_with(raw_url)
         cli.answer_guest_query.assert_awaited_once()
-        assert cli.answer_guest_query.await_args is not None
-        result = cli.answer_guest_query.await_args.args[1]
-        self.assertIsInstance(result.input_message_content, RawRichMessageContent)
-        return parse_service, cli, result
+        edit_rich.assert_not_awaited()
+        cli.edit_inline_text.assert_awaited_once()
+        return parse_service, cli, edit_rich
 
     async def test_guest_enabled_uses_original_canonical_cache_identity(self) -> None:
         parse_service, _, _ = await self._run_cached_guest(use_flyinglife=True)
@@ -119,6 +224,8 @@ class GuestParseAsyncTests(unittest.IsolatedAsyncioTestCase):
         settings_service.get_config_by_user = AsyncMock(return_value=SettingsConfig())
         cli = MagicMock()
         cli.answer_guest_query = AsyncMock(return_value=SimpleNamespace(inline_message_id="inline-id"))
+        cli.edit_inline_text = AsyncMock()
+        cli.edit_inline_media = AsyncMock(return_value=True)
         message = cast(
             Message,
             SimpleNamespace(
@@ -131,15 +238,10 @@ class GuestParseAsyncTests(unittest.IsolatedAsyncioTestCase):
         pipeline_result = SimpleNamespace(engine="flyinglife", parse_result=parse_result)
         pipeline = MagicMock()
         pipeline.__enter__.return_value = pipeline
-        async def run_pipeline() -> object:
-            cli.answer_guest_query.assert_not_awaited()
-            return pipeline_result
-
-        pipeline.run = AsyncMock(side_effect=run_pipeline)
+        pipeline.run = AsyncMock(return_value=pipeline_result)
         pipeline.waited = False
         cache_media = [CacheMedia(type=CacheMediaType.VIDEO, file_id="video-file-id")]
-        rich_message = raw.types.InputRichMessage(blocks=[raw.types.PageBlockDivider()])
-        rich = SimpleNamespace(message=rich_message, layout="single", media_count=1, cache_media=cache_media)
+        rich = SimpleNamespace(message=object(), layout="single", media_count=1, cache_media=cache_media)
 
         with (
             patch("plugins.guest_parse.get_session", return_value=FakeSessionContext()),
@@ -157,10 +259,7 @@ class GuestParseAsyncTests(unittest.IsolatedAsyncioTestCase):
             await guest_parse(cli, message)
 
         self.assertTrue(pipeline_cls.call_args.kwargs["singleflight"])
-        cli.answer_guest_query.assert_awaited_once()
-        assert cli.answer_guest_query.await_args is not None
-        result = cli.answer_guest_query.await_args.args[1]
-        self.assertIsInstance(result.input_message_content, RawRichMessageContent)
+        cli.edit_inline_media.assert_awaited_once()
         cache_set.assert_awaited_once()
         assert cache_set.await_args is not None
         cache_key, cache_entry = cache_set.await_args.args

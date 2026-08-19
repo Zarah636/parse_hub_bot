@@ -12,7 +12,6 @@ from pyrogram.file_id import FileType  # noqa: E402
 
 from services.guest_rich_message import (  # noqa: E402
     PreparedRichMedia,
-    RawRichMessageContent,
     RichLayout,
     RichMediaKind,
     RichMediaSource,
@@ -128,15 +127,6 @@ class GuestRichMessageTests(unittest.TestCase):
 
 
 class GuestRichMessageUploadTests(unittest.IsolatedAsyncioTestCase):
-    async def test_raw_rich_message_content_serializes_guest_result(self) -> None:
-        message = raw.types.InputRichMessage(blocks=[raw.types.PageBlockDivider()])
-        content = RawRichMessageContent(message)
-
-        written = await content.write(MagicMock(), None)
-
-        self.assertIsInstance(written, raw.types.InputBotInlineMessageRichMessage)
-        self.assertIs(written.rich_message, message)
-
     async def test_uploaded_photo_produces_reusable_cache_file_id(self) -> None:
         cli = MagicMock()
         cli.save_file = AsyncMock(return_value=MagicMock())
