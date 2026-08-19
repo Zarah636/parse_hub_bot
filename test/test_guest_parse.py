@@ -93,6 +93,26 @@ class GuestParseTests(unittest.TestCase):
         self.assertNotIn("**闪亮登场玩元英 女团舞**", caption)
         self.assertIn("闪亮登场！ #玩元英 #女团舞", caption)
 
+    def test_caption_omits_duplicate_title_with_numeric_post_id(self) -> None:
+        caption = build_caption_by_str(
+            "21123_湿夏夏日溯溪 水中情绪片",
+            "湿夏.#夏日溯溪 #水中情绪片",
+            "https://example.com/source",
+        )
+
+        self.assertNotIn("21123_", caption)
+        self.assertEqual(caption.count("湿夏"), 1)
+        self.assertIn("湿夏.#夏日溯溪 #水中情绪片", caption)
+
+    def test_caption_keeps_legitimate_numeric_title_without_separator(self) -> None:
+        caption = build_caption_by_str(
+            "2024夏日",
+            "夏日",
+            "https://example.com/source",
+        )
+
+        self.assertIn("**2024夏日**", caption)
+
     def test_caption_keeps_title_when_description_is_hidden(self) -> None:
         caption = build_caption_by_str(
             "闪亮登场玩元英 女团舞",

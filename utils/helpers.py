@@ -1,5 +1,6 @@
 import asyncio
 import functools
+import re
 import tarfile
 import unicodedata
 import uuid
@@ -11,14 +12,29 @@ from log import logger
 
 
 def equivalent_caption_text(left: str | None, right: str | None) -> bool:
-    """判断两段文案是否仅在空白、标点或话题符号上不同。"""
+    """判断标题与正文是否仅差异于排版或数字 ID 前缀。"""
 
     def normalize(value: str | None) -> str:
         normalized = unicodedata.normalize("NFKC", value or "").casefold()
         return "".join(char for char in normalized if char.isalnum())
 
     normalized_left = normalize(left)
-    return bool(normalized_left and normalized_left == normalize(right))
+    normalized_right = normalize(right)
+    if not normalized_left or not normalized_right:
+        return False
+    if normalized_left == normalized_right:
+        return True
+
+    # Some parsers prepend a numeric post ID (for example ``21123_``) to
+    # an otherwise equivalent title. Require a separator so legitimate
+    # titles such as ``2024夏日`` are not treated as duplicates of ``夏日``.
+    left_without_id = re.sub(
+        r"^\d+[\W_]+",
+        "",
+        unicodedata.normalize("NFKC", left or "").casefold(),
+        count=1,
+    )
+    return bool(left_without_id and normalize(left_without_id) == normalized_right)
 
 
 async def run_cmd(*cmd: str, timeout: float = 30) -> str:

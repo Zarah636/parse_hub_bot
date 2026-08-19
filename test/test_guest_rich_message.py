@@ -45,7 +45,7 @@ class GuestRichMessageTests(unittest.TestCase):
             RichLayout.SLIDESHOW,
         )
 
-    def test_collage_message_contains_supported_text_media_and_source(self) -> None:
+    def test_collage_message_places_body_below_media_without_separate_title(self) -> None:
         sources = [photo(), photo()]
         prepared = [
             PreparedRichMedia(
@@ -66,13 +66,30 @@ class GuestRichMessageTests(unittest.TestCase):
         message = cast(raw.types.InputRichMessage, result.message)
         self.assertEqual(result.layout, RichLayout.COLLAGE)
         self.assertEqual(result.media_count, 2)
-        self.assertTrue(any(isinstance(block, raw.types.PageBlockHeading1) for block in message.blocks))
+        self.assertFalse(any(isinstance(block, raw.types.PageBlockHeading1) for block in message.blocks))
         self.assertFalse(any(isinstance(block, raw.types.PageBlockTitle) for block in message.blocks))
         self.assertTrue(any(isinstance(block, raw.types.PageBlockParagraph) for block in message.blocks))
         collage = next(block for block in message.blocks if isinstance(block, raw.types.PageBlockCollage))
         self.assertEqual(sum(isinstance(block, raw.types.PageBlockPhoto) for block in collage.items), 2)
         self.assertTrue(any(isinstance(block, raw.types.PageBlockFooter) for block in message.blocks))
+        paragraph_index = next(
+            index for index, block in enumerate(message.blocks) if isinstance(block, raw.types.PageBlockParagraph)
+        )
+        self.assertLess(message.blocks.index(collage), paragraph_index)
         self.assertTrue(message.write())
+
+    def test_text_article_keeps_title_above_body(self) -> None:
+        result = assemble_rich_message(
+            title="文章标题",
+            content="文章正文",
+            source_url="https://example.com/source",
+            media_sources=[],
+            prepared=[],
+        )
+
+        message = cast(raw.types.InputRichMessage, result.message)
+        self.assertIsInstance(message.blocks[0], raw.types.PageBlockHeading1)
+        self.assertIsInstance(message.blocks[1], raw.types.PageBlockParagraph)
 
     def test_rich_message_omits_semantically_duplicate_title(self) -> None:
         result = assemble_rich_message(
@@ -86,6 +103,33 @@ class GuestRichMessageTests(unittest.TestCase):
         message = cast(raw.types.InputRichMessage, result.message)
         self.assertFalse(any(isinstance(block, raw.types.PageBlockHeading1) for block in message.blocks))
         self.assertTrue(any(isinstance(block, raw.types.PageBlockParagraph) for block in message.blocks))
+
+    def test_real_world_numeric_title_is_omitted_and_body_follows_collage(self) -> None:
+        sources = [photo(), photo()]
+        prepared = [
+            PreparedRichMedia(
+                RichMediaKind.PHOTO,
+                raw.types.InputPhoto(id=index, access_hash=index + 10, file_reference=b"ref"),
+            )
+            for index in (1, 2)
+        ]
+        content = "湿夏.#夏日溯溪 #水中情绪片"
+
+        result = assemble_rich_message(
+            title="21123_湿夏夏日溯溪 水中情绪片",
+            content=content,
+            source_url="https://example.com/source",
+            media_sources=sources,
+            prepared=prepared,
+        )
+
+        message = cast(raw.types.InputRichMessage, result.message)
+        self.assertIsInstance(message.blocks[0], raw.types.PageBlockCollage)
+        self.assertFalse(any(isinstance(block, raw.types.PageBlockHeading1) for block in message.blocks))
+        paragraph = next(block for block in message.blocks if isinstance(block, raw.types.PageBlockParagraph))
+        self.assertIsInstance(paragraph.text, raw.types.TextPlain)
+        paragraph_text = cast(raw.types.TextPlain, paragraph.text)
+        self.assertEqual(paragraph_text.text, content)
 
     def test_mixed_media_serializes_as_slideshow(self) -> None:
         sources = [photo(), RichMediaSource(RichMediaKind.VIDEO, width=1920, height=1080)]

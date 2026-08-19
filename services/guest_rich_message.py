@@ -179,16 +179,19 @@ def assemble_rich_message(
         raise ValueError("media source and prepared media counts differ")
 
     blocks: list[raw.base.PageBlock] = []
+    text_blocks: list[raw.base.PageBlock] = []
     title = (title or "").strip()[:512]
     content = (content or "").strip()[:30000]
     if not hide_title and not hide_desc and equivalent_caption_text(title, content):
         title = ""
-    if title and not hide_title:
+    # Media posts follow Telegram's caption convention and do not render a
+    # separate heading. Text-only articles keep their title above the body.
+    if title and not hide_title and not media_sources:
         # Outgoing Rich Messages support section headings, but not the legacy
         # Instant View PageBlockTitle block.
-        blocks.append(raw.types.PageBlockHeading1(text=raw.types.TextPlain(text=title)))
+        text_blocks.append(raw.types.PageBlockHeading1(text=raw.types.TextPlain(text=title)))
     if content and not hide_desc:
-        blocks.append(raw.types.PageBlockParagraph(text=raw.types.TextPlain(text=content)))
+        text_blocks.append(raw.types.PageBlockParagraph(text=raw.types.TextPlain(text=content)))
 
     empty_caption = raw.types.PageCaption(text=raw.types.TextEmpty(), credit=raw.types.TextEmpty())
     media_blocks: list[raw.base.PageBlock] = []
@@ -220,6 +223,9 @@ def assemble_rich_message(
         blocks.append(raw.types.PageBlockCollage(items=media_blocks, caption=empty_caption))
     elif layout == RichLayout.SLIDESHOW:
         blocks.append(raw.types.PageBlockSlideshow(items=media_blocks, caption=empty_caption))
+
+    # Match ordinary Telegram media captions: media first, text below it.
+    blocks.extend(text_blocks)
 
     if source_url and not hide_source:
         blocks.append(
