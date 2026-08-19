@@ -185,9 +185,10 @@ def assemble_rich_message(
         title = ""
 
     layout = choose_layout(media_sources)
-    # Text-only articles use ordinary heading/paragraph blocks. Media posts
-    # must put their copy in PageCaption; Telegram clients can omit a standalone
-    # paragraph placed after a collage or slideshow.
+    # Text-only articles keep their heading/body structure. Media parsers are
+    # inconsistent: FlyingLife usually provides the post copy as ``content``,
+    # while ParseHub's Douyin parser provides it as ``title``. Render the first
+    # visible value as an ordinary paragraph below the media.
     if title and not hide_title and layout is None:
         # Outgoing Rich Messages support section headings, but not the legacy
         # Instant View PageBlockTitle block.
@@ -196,11 +197,7 @@ def assemble_rich_message(
         blocks.append(raw.types.PageBlockParagraph(text=raw.types.TextPlain(text=content)))
 
     empty_caption = raw.types.PageCaption(text=raw.types.TextEmpty(), credit=raw.types.TextEmpty())
-    media_caption_text = content if content and not hide_desc else title if title and not hide_title else ""
-    media_caption = raw.types.PageCaption(
-        text=raw.types.TextPlain(text=media_caption_text) if media_caption_text else raw.types.TextEmpty(),
-        credit=raw.types.TextEmpty(),
-    )
+    media_body = content if content and not hide_desc else title if title and not hide_title else ""
     media_blocks: list[raw.base.PageBlock] = []
     photos: list[raw.base.InputPhoto] = []
     documents: list[raw.base.InputDocument] = []
@@ -212,7 +209,7 @@ def assemble_rich_message(
             media_blocks.append(
                 raw.types.PageBlockPhoto(
                     photo_id=item.media.id,
-                    caption=media_caption if layout == RichLayout.SINGLE else empty_caption,
+                    caption=empty_caption,
                 )
             )
         else:
@@ -222,7 +219,7 @@ def assemble_rich_message(
             media_blocks.append(
                 raw.types.PageBlockVideo(
                     video_id=item.media.id,
-                    caption=media_caption if layout == RichLayout.SINGLE else empty_caption,
+                    caption=empty_caption,
                     autoplay=item.kind == RichMediaKind.ANIMATION,
                     loop=item.kind == RichMediaKind.ANIMATION,
                 )
@@ -231,9 +228,12 @@ def assemble_rich_message(
     if layout == RichLayout.SINGLE:
         blocks.extend(media_blocks)
     elif layout == RichLayout.COLLAGE:
-        blocks.append(raw.types.PageBlockCollage(items=media_blocks, caption=media_caption))
+        blocks.append(raw.types.PageBlockCollage(items=media_blocks, caption=empty_caption))
     elif layout == RichLayout.SLIDESHOW:
-        blocks.append(raw.types.PageBlockSlideshow(items=media_blocks, caption=media_caption))
+        blocks.append(raw.types.PageBlockSlideshow(items=media_blocks, caption=empty_caption))
+
+    if layout is not None and media_body:
+        blocks.append(raw.types.PageBlockParagraph(text=raw.types.TextPlain(text=media_body)))
 
     if source_url and not hide_source:
         blocks.append(

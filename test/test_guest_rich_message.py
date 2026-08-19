@@ -68,11 +68,12 @@ class GuestRichMessageTests(unittest.TestCase):
         self.assertEqual(result.media_count, 2)
         self.assertFalse(any(isinstance(block, raw.types.PageBlockHeading1) for block in message.blocks))
         self.assertFalse(any(isinstance(block, raw.types.PageBlockTitle) for block in message.blocks))
-        self.assertFalse(any(isinstance(block, raw.types.PageBlockParagraph) for block in message.blocks))
         collage = next(block for block in message.blocks if isinstance(block, raw.types.PageBlockCollage))
         self.assertEqual(sum(isinstance(block, raw.types.PageBlockPhoto) for block in collage.items), 2)
-        self.assertIsInstance(collage.caption.text, raw.types.TextPlain)
-        self.assertEqual(cast(raw.types.TextPlain, collage.caption.text).text, "Description")
+        self.assertIsInstance(collage.caption.text, raw.types.TextEmpty)
+        paragraph = next(block for block in message.blocks if isinstance(block, raw.types.PageBlockParagraph))
+        self.assertEqual(cast(raw.types.TextPlain, paragraph.text).text, "Description")
+        self.assertLess(message.blocks.index(collage), message.blocks.index(paragraph))
         self.assertTrue(any(isinstance(block, raw.types.PageBlockFooter) for block in message.blocks))
         self.assertTrue(message.write())
 
@@ -125,8 +126,9 @@ class GuestRichMessageTests(unittest.TestCase):
         self.assertIsInstance(message.blocks[0], raw.types.PageBlockCollage)
         self.assertFalse(any(isinstance(block, raw.types.PageBlockHeading1) for block in message.blocks))
         collage = cast(raw.types.PageBlockCollage, message.blocks[0])
-        self.assertIsInstance(collage.caption.text, raw.types.TextPlain)
-        self.assertEqual(cast(raw.types.TextPlain, collage.caption.text).text, content)
+        self.assertIsInstance(collage.caption.text, raw.types.TextEmpty)
+        paragraph = next(block for block in message.blocks if isinstance(block, raw.types.PageBlockParagraph))
+        self.assertEqual(cast(raw.types.TextPlain, paragraph.text).text, content)
 
     def test_mixed_media_serializes_as_slideshow(self) -> None:
         sources = [photo(), RichMediaSource(RichMediaKind.VIDEO, width=1920, height=1080)]
@@ -152,11 +154,12 @@ class GuestRichMessageTests(unittest.TestCase):
         message = cast(raw.types.InputRichMessage, result.message)
         self.assertEqual(result.layout, RichLayout.SLIDESHOW)
         slideshow = next(block for block in message.blocks if isinstance(block, raw.types.PageBlockSlideshow))
-        self.assertIsInstance(slideshow.caption.text, raw.types.TextPlain)
-        self.assertEqual(cast(raw.types.TextPlain, slideshow.caption.text).text, "Photo and video")
+        self.assertIsInstance(slideshow.caption.text, raw.types.TextEmpty)
+        paragraph = next(block for block in message.blocks if isinstance(block, raw.types.PageBlockParagraph))
+        self.assertEqual(cast(raw.types.TextPlain, paragraph.text).text, "Photo and video")
         self.assertTrue(message.write())
 
-    def test_single_media_uses_content_as_its_caption(self) -> None:
+    def test_single_media_uses_content_as_body_below_media(self) -> None:
         result = assemble_rich_message(
             title="Ignored title",
             content="Visible body",
@@ -172,10 +175,11 @@ class GuestRichMessageTests(unittest.TestCase):
 
         message = cast(raw.types.InputRichMessage, result.message)
         photo_block = cast(raw.types.PageBlockPhoto, message.blocks[0])
-        self.assertIsInstance(photo_block.caption.text, raw.types.TextPlain)
-        self.assertEqual(cast(raw.types.TextPlain, photo_block.caption.text).text, "Visible body")
+        self.assertIsInstance(photo_block.caption.text, raw.types.TextEmpty)
+        paragraph = cast(raw.types.PageBlockParagraph, message.blocks[1])
+        self.assertEqual(cast(raw.types.TextPlain, paragraph.text).text, "Visible body")
 
-    def test_media_falls_back_to_title_when_parser_has_no_content(self) -> None:
+    def test_media_body_falls_back_to_title_when_parser_has_no_content(self) -> None:
         result = assemble_rich_message(
             title="Parser caption",
             content="",
@@ -192,8 +196,9 @@ class GuestRichMessageTests(unittest.TestCase):
 
         message = cast(raw.types.InputRichMessage, result.message)
         collage = cast(raw.types.PageBlockCollage, message.blocks[0])
-        self.assertIsInstance(collage.caption.text, raw.types.TextPlain)
-        self.assertEqual(cast(raw.types.TextPlain, collage.caption.text).text, "Parser caption")
+        self.assertIsInstance(collage.caption.text, raw.types.TextEmpty)
+        paragraph = cast(raw.types.PageBlockParagraph, message.blocks[1])
+        self.assertEqual(cast(raw.types.TextPlain, paragraph.text).text, "Parser caption")
 
     def test_rich_build_carries_original_file_id_cache_entries(self) -> None:
         cache_media = CacheMedia(type=CacheMediaType.PHOTO, file_id="photo-file-id")
