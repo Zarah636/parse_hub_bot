@@ -13,6 +13,7 @@ from i18n import ISO639_MAP, t_
 from log import logger
 from repo.settings import SettingsConfig
 from utils.converter import clean_article_html
+from utils.helpers import equivalent_caption_text
 from utils.ph import Telegraph
 
 logger = logger.bind(name="Helpers")
@@ -95,8 +96,11 @@ def build_caption_by_str(
 ) -> str:
     """构建消息正文：标题 + 内容 + 来源链接"""
     title, content = title or "", content or ""
+    if not hide_title and not hide_desc and equivalent_caption_text(title, content):
+        title = ""
     if rich:
-        body = f"### {title}\n\n <details><summary>📃</summary>\n\n{content}\n\n</details>"
+        title_block = f"### {title}\n\n" if title else ""
+        body = f"{title_block}<details><summary>📃</summary>\n\n{content}\n\n</details>"
     elif telegraph_url:
         label = (title or content[:15]).replace("\n", " ") or "-"
         body = f"**[{label}]({telegraph_url})**"

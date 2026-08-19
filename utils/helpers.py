@@ -1,12 +1,24 @@
 import asyncio
 import functools
 import tarfile
+import unicodedata
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any
 
 from log import logger
+
+
+def equivalent_caption_text(left: str | None, right: str | None) -> bool:
+    """判断两段文案是否仅在空白、标点或话题符号上不同。"""
+
+    def normalize(value: str | None) -> str:
+        normalized = unicodedata.normalize("NFKC", value or "").casefold()
+        return "".join(char for char in normalized if char.isalnum())
+
+    normalized_left = normalize(left)
+    return bool(normalized_left and normalized_left == normalize(right))
 
 
 async def run_cmd(*cmd: str, timeout: float = 30) -> str:

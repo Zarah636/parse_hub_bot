@@ -11,6 +11,7 @@ from pyrogram.file_id import FileId, FileType, ThumbnailSource
 from services.cache import CacheEntry, CacheMedia, CacheMediaType
 from services.media import resolve_media_info
 from services.pipeline import PipelineResult
+from utils.helpers import equivalent_caption_text
 
 MAX_RICH_MEDIA = 50
 LONG_IMAGE_RATIO = 2.2
@@ -194,6 +195,8 @@ def assemble_rich_message(
     blocks: list[raw.base.PageBlock] = []
     title = (title or "").strip()[:512]
     content = (content or "").strip()[:30000]
+    if not hide_title and not hide_desc and equivalent_caption_text(title, content):
+        title = ""
     if title and not hide_title:
         blocks.append(raw.types.PageBlockTitle(text=raw.types.TextPlain(text=title)))
     if content and not hide_desc:

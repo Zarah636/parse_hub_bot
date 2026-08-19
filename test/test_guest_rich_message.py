@@ -69,6 +69,18 @@ class GuestRichMessageTests(unittest.TestCase):
         self.assertTrue(any(isinstance(block, raw.types.PageBlockFooter) for block in result.message.blocks))
         self.assertTrue(result.message.write())
 
+    def test_rich_message_omits_semantically_duplicate_title(self) -> None:
+        result = assemble_rich_message(
+            title="闪亮登场玩元英 女团舞",
+            content="闪亮登场！ #玩元英 #女团舞",
+            source_url="https://example.com/source",
+            media_sources=[],
+            prepared=[],
+        )
+
+        self.assertFalse(any(isinstance(block, raw.types.PageBlockTitle) for block in result.message.blocks))
+        self.assertTrue(any(isinstance(block, raw.types.PageBlockParagraph) for block in result.message.blocks))
+
     def test_mixed_media_serializes_as_slideshow(self) -> None:
         sources = [photo(), RichMediaSource(RichMediaKind.VIDEO, width=1920, height=1080)]
         prepared = [

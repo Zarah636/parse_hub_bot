@@ -13,7 +13,7 @@ from pyrogram import raw  # noqa: E402
 from pyrogram.types import InputMediaPhoto, InputMediaVideo, Message  # noqa: E402
 
 from plugins.guest_parse import edit_guest_result, extract_guest_url, guest_parse  # noqa: E402
-from plugins.helpers import COMMANDS, build_start_text  # noqa: E402
+from plugins.helpers import COMMANDS, build_caption_by_str, build_start_text  # noqa: E402
 from repo.settings import SettingsConfig  # noqa: E402
 from services import CacheEntry, CacheMedia, CacheMediaType, CacheParseResult  # noqa: E402
 from services.guest_rich_message import RichLayout, RichMessageBuild  # noqa: E402
@@ -53,6 +53,35 @@ class GuestParseTests(unittest.TestCase):
         self.assertIn("/flyinglife", build_start_text()["zh-hans"])
         self.assertIn("Send share link", build_start_text()["en-us"])
         self.assertIn("/flyinglife", build_start_text()["en-us"])
+
+    def test_caption_omits_semantically_duplicate_title(self) -> None:
+        caption = build_caption_by_str(
+            "闪亮登场玩元英 女团舞",
+            "闪亮登场！ #玩元英 #女团舞",
+            "https://example.com/source",
+        )
+
+        self.assertNotIn("**闪亮登场玩元英 女团舞**", caption)
+        self.assertIn("闪亮登场！ #玩元英 #女团舞", caption)
+
+    def test_caption_keeps_title_when_description_is_hidden(self) -> None:
+        caption = build_caption_by_str(
+            "闪亮登场玩元英 女团舞",
+            "闪亮登场！ #玩元英 #女团舞",
+            "https://example.com/source",
+            hide_desc=True,
+        )
+
+        self.assertIn("**闪亮登场玩元英 女团舞**", caption)
+
+    def test_caption_keeps_distinct_title_and_description(self) -> None:
+        caption = build_caption_by_str(
+            "玩元英 女团舞",
+            "闪亮登场！ #玩元英 #女团舞",
+            "https://example.com/source",
+        )
+
+        self.assertIn("**玩元英 女团舞**", caption)
 
 
 class GuestParseAsyncTests(unittest.IsolatedAsyncioTestCase):
