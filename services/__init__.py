@@ -8,8 +8,9 @@ from .cache import (
     persistent_cache,
 )
 from .chat import ChatService
-from .forum_topic import ForumTopicService
 from .flyinglife import FlyingLifeInlineCandidate, FlyingLifeService, flyinglife
+from .flyinglife_runtime import FlyingLifeRuntime, flyinglife_runtime
+from .forum_topic import ForumTopicService
 from .hybrid import HybridParsePipeline
 from .parser import ParseService
 from .pipeline import ParsePipeline, PipelineProgressCallback, PipelineResult, StatusReporter
@@ -52,6 +53,8 @@ __all__ = [
     "FlyingLifeService",
     "FlyingLifeInlineCandidate",
     "flyinglife",
+    "FlyingLifeRuntime",
+    "flyinglife_runtime",
     "PipelineResult",
     "PipelineProgressCallback",
     "StatusReporter",

@@ -70,6 +70,7 @@ class HybridParsePipeline:
 
     @property
     def waited(self) -> bool:
+        """兼容旧调用：True 表示命中已有流水线；当前策略不会继续等待。"""
         return self._waited or bool(self._local and self._local.waited)
 
     def finish(self) -> None:
@@ -81,7 +82,9 @@ class HybridParsePipeline:
         self._owns_inflight = False
 
     async def run(self) -> PipelineResult | None:
-        use_flyinglife = not self._skip_flyinglife and flyinglife.can_attempt(self._platform_id)
+        use_flyinglife = not self._skip_flyinglife and flyinglife.should_attempt(
+            self._platform_id, context="hybrid_pipeline"
+        )
         if not use_flyinglife:
             return await self._run_local(singleflight=self._singleflight)
 
@@ -89,10 +92,8 @@ class HybridParsePipeline:
             existing = _inflight.get(self._raw_url)
             if existing is not None:
                 self._waited = True
-                logger.debug(f"FlyingLife singleflight 命中: url={self._raw_url}")
-                await self._reporter.report(self._t("已有相同任务正在解析, 等待解析完成..."))
-                await existing.wait()
-                await self._reporter.dismiss()
+                logger.debug(f"FlyingLife singleflight 命中, 跳过重复流水线: url={self._raw_url}")
+                await self._reporter.report(self._t("已有相同任务正在解析，请稍后重试。"))
                 return None
             _inflight[self._raw_url] = asyncio.Event()
             self._owns_inflight = True

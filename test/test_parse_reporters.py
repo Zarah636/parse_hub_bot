@@ -8,7 +8,8 @@ os.environ.setdefault("BOT_TOKEN", "1:test")
 
 from pyrogram.errors import MessageNotModified  # noqa: E402
 
-from plugins.parse.reporters import MessageStatusReporter  # noqa: E402
+from plugins.parse.reporters import InlineStatusReporter, MessageStatusReporter  # noqa: E402
+from repo.settings import SettingsConfig  # noqa: E402
 
 
 class MessageStatusReporterTests(unittest.IsolatedAsyncioTestCase):
@@ -16,7 +17,7 @@ class MessageStatusReporterTests(unittest.IsolatedAsyncioTestCase):
         reporter = MessageStatusReporter(
             MagicMock(),
             MagicMock(),
-            t=lambda text: text,
+            t=lambda text: text,  # type: ignore[arg-type]
             config=MagicMock(noprogress=False),
         )
         status_message = MagicMock(text="stale text")
@@ -26,6 +27,23 @@ class MessageStatusReporterTests(unittest.IsolatedAsyncioTestCase):
         await reporter.report("解 析 中...")
 
         status_message.edit_text.assert_awaited_once()
+
+    async def test_inline_hidden_error_replaces_progress_with_failure_text(self) -> None:
+        cli = MagicMock()
+        cli.edit_inline_text = AsyncMock()
+        config = SettingsConfig(hide_error=True)
+        reporter = InlineStatusReporter(
+            cli,
+            "inline-id",
+            t=lambda text: text,  # type: ignore[arg-type]
+            user_config=config,
+            failure_text="解析失败，请重新尝试。",
+        )
+
+        await reporter.report_error("解析", RuntimeError("boom"))
+
+        cli.edit_inline_text.assert_awaited_once()
+        self.assertEqual(cli.edit_inline_text.await_args.kwargs["text"], "解析失败，请重新尝试。")
 
 
 if __name__ == "__main__":

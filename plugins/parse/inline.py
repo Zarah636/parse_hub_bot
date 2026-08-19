@@ -67,12 +67,12 @@ LINK_ICON_HEIGHT = 72
 
 
 async def resolve_inline_preview(query: str, raw_url: str, platform_id: str) -> AnyParseResult:
-    cached_candidate = await inline_flyinglife_cache.get(raw_url)
-    if isinstance(cached_candidate, FlyingLifeInlineCandidate):
-        logger.debug("inline: FlyingLife 候选缓存命中")
-        return cached_candidate.preview_result
-
-    if flyinglife.can_attempt(platform_id):
+    use_flyinglife = flyinglife.should_attempt(platform_id, context="inline_preview")
+    if use_flyinglife:
+        cached_candidate = await inline_flyinglife_cache.get(raw_url)
+        if isinstance(cached_candidate, FlyingLifeInlineCandidate):
+            logger.debug("inline: FlyingLife 候选缓存命中")
+            return cached_candidate.preview_result
         try:
             candidate = await flyinglife.parse_inline_candidate(query, raw_url)
         except Exception as e:
@@ -152,10 +152,11 @@ async def inline_result_download(cli: Client, chosen_result: ChosenInlineResult)
     logger.debug(f"inline 下载触发: media_index={media_index}, query={query}")
     parse_service = ParseService()
     platform_id = parse_service.get_platform(query).id
+    use_flyinglife = flyinglife.should_attempt(platform_id, context="inline_download")
     raw_url = await parse_service.get_raw_url(query)
 
     parsehub_cached_result = await parse_cache.get(raw_url)
-    cached_candidate = await inline_flyinglife_cache.get(raw_url)
+    cached_candidate = await inline_flyinglife_cache.get(raw_url) if use_flyinglife else None
     candidate = cached_candidate if isinstance(cached_candidate, FlyingLifeInlineCandidate) else None
     logger.debug(
         f"内联下载候选: flyinglife={candidate is not None}, parsehub_cache={parsehub_cached_result is not None}"
@@ -173,6 +174,7 @@ async def inline_result_download(cli: Client, chosen_result: ChosenInlineResult)
         singleflight=False,
         download_video_cover=config.video_cover,
         flyinglife_parse_result=candidate.download_result if candidate else None,
+        skip_flyinglife=not use_flyinglife,
         t=_t,
     ) as pipeline:
         if (result := await pipeline.run()) is None:

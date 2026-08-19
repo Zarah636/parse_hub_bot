@@ -35,7 +35,7 @@ class FlyingLifeParseTests(unittest.IsolatedAsyncioTestCase):
                 "https://v.douyin.com/example/",
                 "https://v.douyin.com/example/",
                 reporter,
-                _t=lambda text: text,
+                _t=lambda text: text,  # type: ignore[arg-type]
             )
 
         self.assertIs(result, parse_result)

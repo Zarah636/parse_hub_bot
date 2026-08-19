@@ -74,7 +74,7 @@ class FlyingLifeInlineTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch("plugins.parse.inline.inline_flyinglife_cache.get", AsyncMock(return_value=None)),
             patch("plugins.parse.inline.inline_flyinglife_cache.set", AsyncMock()) as cache_set,
-            patch.object(flyinglife, "can_attempt", return_value=True),
+            patch.object(flyinglife, "should_attempt", return_value=True),
             patch.object(flyinglife, "parse_inline_candidate", AsyncMock(return_value=candidate)) as parse,
             patch("plugins.parse.inline.ParseService") as parse_service,
         ):
@@ -93,7 +93,7 @@ class FlyingLifeInlineTests(unittest.IsolatedAsyncioTestCase):
         parse_service.parse = AsyncMock(return_value=fallback)
         with (
             patch("plugins.parse.inline.inline_flyinglife_cache.get", AsyncMock(return_value=None)),
-            patch.object(flyinglife, "can_attempt", return_value=True),
+            patch.object(flyinglife, "should_attempt", return_value=True),
             patch.object(
                 flyinglife,
                 "parse_inline_candidate",
@@ -110,6 +110,21 @@ class FlyingLifeInlineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(result, fallback)
         parse_service.parse.assert_awaited_once_with("https://v.douyin.com/example/")
         parse_cache_set.assert_awaited_once_with("https://www.douyin.com/video/1", fallback)
+
+    async def test_disabled_policy_ignores_flyinglife_candidate_cache(self) -> None:
+        fallback = VideoParseResult(video=VideoRef(url="https://example.com/fallback.mp4"))
+        candidate_cache_get = AsyncMock(return_value=build_candidate())
+        with (
+            patch.object(flyinglife, "should_attempt", return_value=False),
+            patch("plugins.parse.inline.inline_flyinglife_cache.get", candidate_cache_get),
+            patch("plugins.parse.inline.parse_cache.get", AsyncMock(return_value=fallback)),
+        ):
+            result = await resolve_inline_preview(
+                "https://v.douyin.com/example/", "https://www.douyin.com/video/1", "douyin"
+            )
+
+        self.assertIs(result, fallback)
+        candidate_cache_get.assert_not_awaited()
 
     def test_inline_video_cover_follows_personal_setting(self) -> None:
         video_ref = VideoRef(url="https://example.com/video.mp4", thumb_url="https://example.com/cover.jpg")
@@ -167,6 +182,7 @@ class FlyingLifeInlineTests(unittest.IsolatedAsyncioTestCase):
             patch("plugins.parse.inline.t_", {"test": lambda text: text}),
             patch("plugins.parse.inline.ParseService", return_value=parse_service),
             patch("plugins.parse.inline.parse_cache.get", AsyncMock(return_value=parsehub_cached)),
+            patch.object(flyinglife, "should_attempt", return_value=True),
             patch("plugins.parse.inline.inline_flyinglife_cache.get", AsyncMock(return_value=candidate)),
             patch("plugins.parse.inline.InlineStatusReporter", return_value=reporter),
             patch("plugins.parse.inline.HybridParsePipeline", return_value=pipeline) as hybrid_pipeline,
@@ -178,6 +194,7 @@ class FlyingLifeInlineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(kwargs["parse_result"], parsehub_cached)
         self.assertIs(kwargs["flyinglife_parse_result"], candidate.download_result)
         self.assertFalse(kwargs["download_video_cover"])
+        parse_service.get_raw_url.assert_awaited_once_with("https://v.douyin.com/example/")
         cli.edit_inline_media.assert_awaited_once()
         media = cli.edit_inline_media.await_args.kwargs["media"]
         self.assertIsNone(media.video_cover)

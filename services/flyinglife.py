@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from core import bs
 from log import logger
+from services.flyinglife_runtime import flyinglife_runtime
 from services.media import ProcessedMedia, process_media_files
 
 logger = logger.bind(name="FlyingLife")
@@ -168,8 +169,9 @@ class FlyingLifeService:
         self._open_until = 0.0
         logger.info("FlyingLife 会话已加载" if session_id else "FlyingLife 未配置会话")
 
-    def can_attempt(self, platform_id: str) -> bool:
-        if not bs.flyinglife_enabled:
+    def should_attempt(self, platform_id: str, *, context: str = "unspecified") -> bool:
+        if not flyinglife_runtime.effective:
+            logger.debug(f"FlyingLife 策略跳过: context={context}, runtime_or_env_disabled=True")
             return False
         if platform_id.lower() not in bs.flyinglife_platform_id_set:
             return False
@@ -181,8 +183,12 @@ class FlyingLifeService:
             return False
         return True
 
+    def can_attempt(self, platform_id: str) -> bool:
+        """Compatibility wrapper for integrations that have not adopted context logging yet."""
+        return self.should_attempt(platform_id)
+
     async def initialize(self) -> None:
-        if not bs.flyinglife_enabled:
+        if not flyinglife_runtime.effective:
             return
         self._refresh_session()
         if not self._session_id:

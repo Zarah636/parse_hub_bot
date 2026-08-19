@@ -1,6 +1,5 @@
 import asyncio
 import re
-from dataclasses import replace
 
 from parsehub.types import AniRef, RichTextParseResult
 from pyrogram import Client, filters
@@ -164,16 +163,13 @@ async def handle_parse(req: ParseRequest) -> bool:
         await reporter.report_error(req.t_("获取原始链接"), e)
         return False
 
-    use_flyinglife = flyinglife.can_attempt(platform_id)
-    if use_flyinglife:
-        # FlyingLife 必须是第一条网络链路；失败时 HybridParsePipeline 会回退 ParseHub。
-        raw_url = req.url
-    else:
-        try:
-            raw_url = await ParseService().get_raw_url(req.url)
-        except Exception as e:
-            await reporter.report_error(req.t_("获取原始链接"), e)
-            return False
+    use_flyinglife = flyinglife.should_attempt(platform_id, context="message")
+    try:
+        # 与上游保持一致：规范化 URL 同时作为持久缓存和 singleflight 的统一身份。
+        raw_url = await ParseService().get_raw_url(req.url)
+    except Exception as e:
+        await reporter.report_error(req.t_("获取原始链接"), e)
+        return False
 
     if options.use_caching and not req.bypass_cache and (cached := await persistent_cache.get(raw_url)):
         logger.debug("file_id 缓存命中, 直接发送")
@@ -202,19 +198,7 @@ async def handle_parse(req: ParseRequest) -> bool:
     ) as pipeline:
         if (result := await pipeline.run()) is None:
             if pipeline.waited:
-                logger.debug("Singleflight 等待完成, 重新检查缓存")
-                if not req.bypass_cache and (cached := await persistent_cache.get(raw_url)):
-                    try:
-                        await send_cached(sender, cached, raw_url, custom_content=req.custom_content)
-                    except Exception as e:
-                        logger.exception(e)
-                        logger.error("从缓存发送失败, 以上为错误信息")
-                        return False
-                    else:
-                        return True
-                else:
-                    return await handle_parse(replace(req, delete_share_url_msg=False))
-
+                logger.debug("Singleflight 命中, 已提示并跳过重复请求")
             else:
                 logger.debug("Pipeline 返回 None, 跳过后续处理")
             return False

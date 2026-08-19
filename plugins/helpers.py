@@ -3,14 +3,13 @@
 import re
 from urllib.parse import urlsplit
 
-from easy_ai18n import LocaleContent
 from markdown import markdown
 from parsehub import ParseHub, Platform
 from parsehub.types import AnyParseResult, RichTextParseResult
 from pyrogram import Client
 from pyrogram.types import Message
 
-from i18n import t_
+from i18n import ISO639_MAP, t_
 from log import logger
 from repo.settings import SettingsConfig
 from utils.converter import clean_article_html
@@ -26,11 +25,12 @@ COMMANDS = {
     "jxjx": t_("绕过缓存解析"),
     "lang": t_("语言"),
     "cfg": t_("配置"),
+    "flyinglife": t_("FlyingLife 优先解析"),
 }
 
 
-def build_start_text() -> LocaleContent:
-    return t_(
+def build_start_text() -> dict[str, str]:
+    base = t_(
         f"**发送分享链接以进行解析**\n\n"
         f"**支持的平台:**\n"
         f"<blockquote expandable>{get_supported_platforms()}</blockquote>\n\n"
@@ -46,6 +46,16 @@ def build_start_text() -> LocaleContent:
         f"</blockquote>\n\n"
         f"**开源地址: [GitHub](https://github.com/z-mio/parse_hub_bot)**"
     )
+    flyinglife_help = t_("/flyinglife - FlyingLife 全局优先解析开关")
+    result: dict[str, str] = {}
+    for locale in set(ISO639_MAP.values()):
+        text = base[locale]
+        marker = text.rfind("</blockquote>")
+        if marker == -1:
+            result[locale] = f"{text}\n\n{flyinglife_help[locale]}"
+        else:
+            result[locale] = f"{text[:marker]}{flyinglife_help[locale]}\n{text[marker:]}"
+    return result
 
 
 def build_caption(

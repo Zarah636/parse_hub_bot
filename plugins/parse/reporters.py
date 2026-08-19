@@ -104,6 +104,7 @@ class InlineStatusReporter(StatusReporter):
         *,
         t: PreLocaleSelector,
         user_config: SettingsConfig,
+        failure_text: str | None = None,
     ):
         self._cli = cli
         self._mid = inline_message_id
@@ -111,6 +112,7 @@ class InlineStatusReporter(StatusReporter):
         self._last_text: str | None = None
         self._t = t
         self._user_config = user_config
+        self._failure_text = failure_text
 
     async def report(self, text: str) -> None:
         text = format_label(text)
@@ -122,6 +124,12 @@ class InlineStatusReporter(StatusReporter):
 
     async def report_error(self, stage: str, error: Exception) -> None:
         if self._user_config.hide_error:
+            if self._failure_text:
+                await self._edit_inline_text(
+                    inline_message_id=self._mid,
+                    text=self._failure_text,
+                    link_preview_options=LinkPreviewOptions(is_disabled=True),
+                )
             return
 
         text = self._t(f"{format_label(f'{stage}错误:')} \n```\n{error}```")
@@ -136,9 +144,12 @@ class InlineStatusReporter(StatusReporter):
 
         async def fn() -> None:
             await asyncio.sleep(15)
+            final_text = self._caption or self._failure_text
+            if not final_text:
+                return
             await self._edit_inline_text(
                 inline_message_id=self._mid,
-                text=self._caption,
+                text=final_text,
                 link_preview_options=LinkPreviewOptions(is_disabled=True),
             )
 
@@ -148,7 +159,7 @@ class InlineStatusReporter(StatusReporter):
     async def _edit_inline_text(self, **kwargs: Any) -> None:
         try:
             await self._cli.edit_inline_text(**kwargs)
-        except (FloodWait, SlowmodeWait):
+        except (FloodWait, SlowmodeWait, MessageNotModified):
             pass
         except Forbidden as e:
             logger.warning(f"消息发送失败, Bot 无权限: {e}")

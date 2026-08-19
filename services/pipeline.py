@@ -12,9 +12,9 @@ from parsehub.types import AniRef, AnyParseResult, PostType, ProgressUnit
 
 from core import bs, pl_cfg
 from log import logger
-from services.parser import ParseService
 from services.media import ProcessedMedia, process_media_files
 from services.media import progress as fmt_progress
+from services.parser import ParseService
 from utils.helpers import to_list
 
 logger = logger.bind(name="Pipeline")
@@ -71,7 +71,7 @@ class ParsePipeline:
     上传逻辑仍由调用方负责。
 
     内置 Singleflight 机制：对同一 URL 的并发调用只会执行一次流水线，
-    其余调用等待 Event 完成后返回 None（调用方应重新检查缓存）。
+    其余调用立即提示重复任务并返回 None，避免误触导致稍后重复发送。
     使用 with 创建实例，退出上下文时会自动 finish() 并清理流水线输出。
     """
 
@@ -123,7 +123,7 @@ class ParsePipeline:
 
     @property
     def waited(self) -> bool:
-        """是否因 singleflight 而等待了其他流水线"""
+        """兼容旧调用：True 表示命中已有流水线；当前策略不会继续等待。"""
         return self._waited
 
     def finish(self) -> None:
@@ -148,10 +148,8 @@ class ParsePipeline:
 
             if existing is not None:
                 self._waited = True
-                logger.debug(f"Singleflight 命中, 等待已有流水线: url={key}")
-                await self._reporter.report(self._t("已有相同任务正在解析, 等待解析完成..."))
-                await existing.wait()
-                await self._reporter.dismiss()
+                logger.debug(f"Singleflight 命中, 跳过重复流水线: url={key}")
+                await self._reporter.report(self._t("已有相同任务正在解析，请稍后重试。"))
                 return None
 
             event = asyncio.Event()

@@ -1,0 +1,186 @@
+import os
+import unittest
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
+
+os.environ.setdefault("API_ID", "1")
+os.environ.setdefault("API_HASH", "test")
+os.environ.setdefault("BOT_TOKEN", "1:test")
+
+from pyrogram import Client, raw, utils  # noqa: E402
+from pyrogram.file_id import FileType  # noqa: E402
+
+from services.guest_rich_message import (  # noqa: E402
+    PreparedRichMedia,
+    RichLayout,
+    RichMediaKind,
+    RichMediaSource,
+    RichMessageUnsupported,
+    _prepare_media,
+    _validate_media,
+    assemble_rich_message,
+    choose_layout,
+)
+from services import CacheMedia, CacheMediaType  # noqa: E402
+
+
+def photo(width: int = 1200, height: int = 1200) -> RichMediaSource:
+    return RichMediaSource(RichMediaKind.PHOTO, width=width, height=height)
+
+
+class GuestRichMessageTests(unittest.TestCase):
+    def test_adaptive_layout_policy(self) -> None:
+        self.assertEqual(choose_layout([photo()]), RichLayout.SINGLE)
+        self.assertEqual(choose_layout([photo(), photo()]), RichLayout.COLLAGE)
+        self.assertEqual(choose_layout([photo() for _ in range(10)]), RichLayout.SLIDESHOW)
+        self.assertEqual(choose_layout([photo(800, 2400), photo()]), RichLayout.SLIDESHOW)
+        self.assertEqual(
+            choose_layout([photo(), RichMediaSource(RichMediaKind.VIDEO)]),
+            RichLayout.SLIDESHOW,
+        )
+        self.assertEqual(
+            choose_layout([photo(), RichMediaSource(RichMediaKind.PHOTO, is_live=True)]),
+            RichLayout.SLIDESHOW,
+        )
+
+    def test_collage_message_contains_text_media_and_source(self) -> None:
+        sources = [photo(), photo()]
+        prepared = [
+            PreparedRichMedia(
+                RichMediaKind.PHOTO,
+                raw.types.InputPhoto(id=index, access_hash=index + 10, file_reference=b"ref"),
+            )
+            for index in (1, 2)
+        ]
+
+        result = assemble_rich_message(
+            title="Title",
+            content="Description",
+            source_url="https://example.com/source",
+            media_sources=sources,
+            prepared=prepared,
+        )
+
+        self.assertEqual(result.layout, RichLayout.COLLAGE)
+        self.assertEqual(result.media_count, 2)
+        self.assertTrue(any(isinstance(block, raw.types.PageBlockTitle) for block in result.message.blocks))
+        self.assertTrue(any(isinstance(block, raw.types.PageBlockParagraph) for block in result.message.blocks))
+        self.assertTrue(any(isinstance(block, raw.types.PageBlockCollage) for block in result.message.blocks))
+        self.assertTrue(any(isinstance(block, raw.types.PageBlockFooter) for block in result.message.blocks))
+        self.assertTrue(result.message.write())
+
+    def test_mixed_media_serializes_as_slideshow(self) -> None:
+        sources = [photo(), RichMediaSource(RichMediaKind.VIDEO, width=1920, height=1080)]
+        prepared = [
+            PreparedRichMedia(
+                RichMediaKind.PHOTO,
+                raw.types.InputPhoto(id=1, access_hash=11, file_reference=b"photo"),
+            ),
+            PreparedRichMedia(
+                RichMediaKind.VIDEO,
+                raw.types.InputDocument(id=2, access_hash=12, file_reference=b"video"),
+            ),
+        ]
+
+        result = assemble_rich_message(
+            title="Mixed",
+            content="Photo and video",
+            source_url="https://example.com/source",
+            media_sources=sources,
+            prepared=prepared,
+        )
+
+        self.assertEqual(result.layout, RichLayout.SLIDESHOW)
+        self.assertTrue(any(isinstance(block, raw.types.PageBlockSlideshow) for block in result.message.blocks))
+        self.assertTrue(result.message.write())
+
+    def test_rich_build_carries_original_file_id_cache_entries(self) -> None:
+        cache_media = CacheMedia(type=CacheMediaType.PHOTO, file_id="photo-file-id")
+        source = photo()
+        prepared = PreparedRichMedia(
+            RichMediaKind.PHOTO,
+            raw.types.InputPhoto(id=1, access_hash=11, file_reference=b"photo"),
+            cache_media,
+        )
+
+        result = assemble_rich_message(
+            title="Title",
+            content="Body",
+            source_url="https://example.com/source",
+            media_sources=[source],
+            prepared=[prepared],
+        )
+
+        self.assertEqual(result.cache_media, [cache_media])
+
+    def test_more_than_fifty_media_is_rejected(self) -> None:
+        with self.assertRaises(RichMessageUnsupported):
+            _validate_media([photo() for _ in range(51)])
+
+    def test_kurigram_guest_and_raw_rich_contract_is_available(self) -> None:
+        self.assertTrue(hasattr(Client, "on_guest_message"))
+        self.assertTrue(hasattr(Client, "answer_guest_query"))
+        self.assertTrue(hasattr(raw.types, "InputRichMessage"))
+        self.assertTrue(hasattr(raw.types, "PageBlockCollage"))
+        self.assertTrue(hasattr(raw.types, "PageBlockSlideshow"))
+        self.assertTrue(hasattr(raw.functions.messages, "EditInlineBotMessage"))
+
+
+class GuestRichMessageUploadTests(unittest.IsolatedAsyncioTestCase):
+    async def test_uploaded_photo_produces_reusable_cache_file_id(self) -> None:
+        cli = MagicMock()
+        cli.save_file = AsyncMock(return_value=MagicMock())
+        uploaded_photo = raw.types.Photo(
+            id=101,
+            access_hash=202,
+            file_reference=b"photo-ref",
+            date=0,
+            sizes=[raw.types.PhotoSize(type="x", w=1200, h=800, size=100)],
+            dc_id=2,
+        )
+        cli.invoke = AsyncMock(return_value=raw.types.MessageMediaPhoto(photo=uploaded_photo))
+
+        prepared = await _prepare_media(
+            cli,
+            RichMediaSource(RichMediaKind.PHOTO, path=Path("photo.jpg"), width=1200, height=800),
+        )
+
+        assert prepared.cache_media is not None
+        self.assertEqual(prepared.cache_media.type, CacheMediaType.PHOTO)
+        cached = utils.get_input_media_from_file_id(prepared.cache_media.file_id, FileType.PHOTO)
+        self.assertIsInstance(cached, raw.types.InputMediaPhoto)
+
+    async def test_uploaded_video_produces_reusable_cache_file_id(self) -> None:
+        cli = MagicMock()
+        cli.save_file = AsyncMock(return_value=MagicMock())
+        uploaded_document = raw.types.Document(
+            id=303,
+            access_hash=404,
+            file_reference=b"video-ref",
+            date=0,
+            mime_type="video/mp4",
+            size=1024,
+            dc_id=2,
+            attributes=[],
+        )
+        cli.invoke = AsyncMock(return_value=raw.types.MessageMediaDocument(document=uploaded_document))
+
+        prepared = await _prepare_media(
+            cli,
+            RichMediaSource(
+                RichMediaKind.VIDEO,
+                path=Path("video.mp4"),
+                width=1920,
+                height=1080,
+                duration=10,
+            ),
+        )
+
+        assert prepared.cache_media is not None
+        self.assertEqual(prepared.cache_media.type, CacheMediaType.VIDEO)
+        cached = utils.get_input_media_from_file_id(prepared.cache_media.file_id, FileType.VIDEO)
+        self.assertIsInstance(cached, raw.types.InputMediaDocument)
+
+
+if __name__ == "__main__":
+    unittest.main()

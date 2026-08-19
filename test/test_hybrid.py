@@ -11,8 +11,12 @@ from easy_ai18n import PreLocaleSelector  # noqa: E402
 from parsehub.types import VideoParseResult, VideoRef  # noqa: E402
 
 from services.flyinglife import FlyingLifeDownloadError, FlyingLifeRunResult, flyinglife  # noqa: E402
-from services.hybrid import HybridParsePipeline  # noqa: E402
-from services.pipeline import PipelineResult, StatusReporter  # noqa: E402
+from services.hybrid import HybridParsePipeline, _inflight  # noqa: E402
+from services.pipeline import (  # noqa: E402
+    PipelineResult,
+    StatusReporter,
+    _inflight as parsehub_inflight,
+)
 
 
 class Reporter:
@@ -43,6 +47,58 @@ def build_pipeline(
 
 
 class HybridParsePipelineTests(unittest.IsolatedAsyncioTestCase):
+    async def test_duplicate_request_is_rejected_without_waiting(self) -> None:
+        reporter = Reporter()
+        event = MagicMock()
+        event.wait = AsyncMock()
+        raw_url = "https://www.douyin.com/video/1"
+        pipeline = HybridParsePipeline(
+            "https://v.douyin.com/example/",
+            raw_url,
+            cast(StatusReporter, reporter),
+            platform_id="douyin",
+            singleflight=True,
+            t=cast(PreLocaleSelector, translate),
+        )
+        _inflight[raw_url] = event
+
+        try:
+            with patch.object(flyinglife, "should_attempt", return_value=True):
+                result = await pipeline.run()
+        finally:
+            _inflight.pop(raw_url, None)
+
+        self.assertIsNone(result)
+        self.assertTrue(pipeline.waited)
+        event.wait.assert_not_awaited()
+        reporter.report.assert_awaited_once_with("已有相同任务正在解析，请稍后重试。")
+
+    async def test_parsehub_duplicate_is_rejected_without_waiting(self) -> None:
+        reporter = Reporter()
+        event = MagicMock()
+        event.wait = AsyncMock()
+        raw_url = "https://www.douyin.com/video/2"
+        pipeline = HybridParsePipeline(
+            "https://v.douyin.com/example/",
+            raw_url,
+            cast(StatusReporter, reporter),
+            platform_id="douyin",
+            singleflight=True,
+            t=cast(PreLocaleSelector, translate),
+        )
+        parsehub_inflight[raw_url] = event
+
+        try:
+            with patch.object(flyinglife, "should_attempt", return_value=False):
+                result = await pipeline.run()
+        finally:
+            parsehub_inflight.pop(raw_url, None)
+
+        self.assertIsNone(result)
+        self.assertTrue(pipeline.waited)
+        event.wait.assert_not_awaited()
+        reporter.report.assert_awaited_once_with("已有相同任务正在解析，请稍后重试。")
+
     async def test_remote_failure_falls_back_before_returning(self) -> None:
         reporter = Reporter()
         pipeline = build_pipeline(reporter)
@@ -50,7 +106,7 @@ class HybridParsePipelineTests(unittest.IsolatedAsyncioTestCase):
         local_result = PipelineResult(parse_result=parse_result)
 
         with (
-            patch.object(flyinglife, "can_attempt", return_value=True),
+            patch.object(flyinglife, "should_attempt", return_value=True),
             patch.object(flyinglife, "run", AsyncMock(side_effect=FlyingLifeDownloadError("代理下载 HTTP 502"))),
             patch.object(pipeline, "_run_local", AsyncMock(return_value=local_result)) as run_local,
         ):
@@ -70,7 +126,7 @@ class HybridParsePipelineTests(unittest.IsolatedAsyncioTestCase):
         local_pipeline.waited = False
 
         with (
-            patch.object(flyinglife, "can_attempt", return_value=False),
+            patch.object(flyinglife, "should_attempt", return_value=False),
             patch("services.hybrid.ParsePipeline", return_value=local_pipeline) as parse_pipeline,
         ):
             result = await pipeline.run()
@@ -89,7 +145,7 @@ class HybridParsePipelineTests(unittest.IsolatedAsyncioTestCase):
         remote_result = FlyingLifeRunResult(parse_result=parse_result)
 
         with (
-            patch.object(flyinglife, "can_attempt", return_value=True),
+            patch.object(flyinglife, "should_attempt", return_value=True),
             patch.object(flyinglife, "run", AsyncMock(return_value=remote_result)),
         ):
             result = await pipeline.run()
@@ -104,7 +160,7 @@ class HybridParsePipelineTests(unittest.IsolatedAsyncioTestCase):
         remote_result = FlyingLifeRunResult(parse_result=parse_result)
 
         with (
-            patch.object(flyinglife, "can_attempt", return_value=True),
+            patch.object(flyinglife, "should_attempt", return_value=True),
             patch.object(flyinglife, "run", AsyncMock(return_value=remote_result)) as run,
         ):
             await pipeline.run()

@@ -29,7 +29,7 @@ class FlyingLifeHandlerTests(unittest.IsolatedAsyncioTestCase):
         self,
         *,
         use_flyinglife: bool,
-        raw_url: str | None = None,
+        raw_url: str = "https://www.douyin.com/video/123",
         mode: ParseMode = ParseMode.PREVIEW,
         video_cover: bool = True,
     ) -> tuple[SimpleNamespace, MagicMock, MagicMock]:
@@ -53,7 +53,7 @@ class FlyingLifeHandlerTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(handlers, "ParseService", return_value=parse_service),
-            patch.object(handlers.flyinglife, "can_attempt", return_value=use_flyinglife),
+            patch.object(handlers.flyinglife, "should_attempt", return_value=use_flyinglife),
             patch.object(handlers, "MessageStatusReporter", return_value=reporter),
             patch.object(handlers, "MessageSender", return_value=MagicMock()),
             patch.object(handlers.persistent_cache, "get", AsyncMock(return_value=None)),
@@ -64,13 +64,13 @@ class FlyingLifeHandlerTests(unittest.IsolatedAsyncioTestCase):
 
         return req, parse_service, hybrid_pipeline
 
-    async def test_flyinglife_is_first_network_path(self) -> None:
+    async def test_flyinglife_uses_original_canonical_cache_identity(self) -> None:
         req, parse_service, hybrid_pipeline = await self.run_until_pipeline(use_flyinglife=True)
 
-        parse_service.get_raw_url.assert_not_awaited()
+        parse_service.get_raw_url.assert_awaited_once_with(req.url)
         args = hybrid_pipeline.call_args.args
         kwargs = hybrid_pipeline.call_args.kwargs
-        self.assertEqual(args[1], req.url)
+        self.assertEqual(args[1], "https://www.douyin.com/video/123")
         self.assertEqual(kwargs["platform_id"], "douyin")
         self.assertEqual(kwargs["download_video_cover"], req.config.video_cover)
 

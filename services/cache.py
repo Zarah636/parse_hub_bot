@@ -69,6 +69,13 @@ class TTLCache:
             self.logger.debug(f"缓存 pop 命中: key={key}")
             return value
 
+    async def clear(self) -> None:
+        async with self._lock:
+            count = len(self._store)
+            self._store.clear()
+            if count:
+                self.logger.debug(f"缓存已清空: {count} 条")
+
     def start_cleanup(self) -> None:
         """启动后台清理任务（需在事件循环运行后调用）"""
         if self._cleanup_task is None:
