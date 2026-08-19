@@ -7,6 +7,8 @@ from pyrogram.types import (
     InputMediaAnimation,
     InputMediaPhoto,
     InputMediaVideo,
+    InputRichMessage,
+    InputRichMessageContent,
     InputTextMessageContent,
     LinkPreviewOptions,
     Message,
@@ -38,16 +40,27 @@ from services.guest_rich_message import (
     edit_inline_rich_message,
 )
 from utils.helpers import with_request_id
+from utils.rate_limit import ParseRateLimitExceeded, parse_rate_limiter
 
 logger = logger.bind(name="GuestParse")
 
+GUEST_ERROR_AUTO_DELETE_SECONDS = 60
+
 
 def extract_guest_url(message: Message) -> str | None:
-    reference = message.reply_to_message
-    text = (reference.text or reference.caption or "") if reference else ""
-    for item in text.split():
-        if ParseService().parser.get_platform(item):
-            return item
+    """Read a URL from the invocation itself, then from its replied-to message."""
+    reference = getattr(message, "reply_to_message", None)
+    texts = (
+        getattr(message, "text", None),
+        getattr(message, "caption", None),
+        getattr(reference, "text", None) if reference else None,
+        getattr(reference, "caption", None) if reference else None,
+    )
+    parser = ParseService().parser
+    for text in texts:
+        for item in (text or "").split():
+            if parser.get_platform(item):
+                return item
     return None
 
 
@@ -67,6 +80,31 @@ async def answer_guest_text(cli: Client, query_id: str, title: str, text: str) -
     )
 
 
+async def answer_guest_rich_text(cli: Client, query_id: str, title: str, text: str) -> SentGuestMessage:
+    """Create an editable Rich Message placeholder for a long-running guest request."""
+    return cast(
+        SentGuestMessage,
+        await cli.answer_guest_query(
+            query_id,
+            InlineQueryResultArticle(
+                title=title,
+                input_message_content=InputRichMessageContent(InputRichMessage(markdown=text)),
+            ),
+        ),
+    )
+
+
+async def answer_guest_progress(cli: Client, query_id: str, title: str, text: str) -> tuple[SentGuestMessage, bool]:
+    """Prefer a Rich placeholder, with a narrow fallback for unsupported blocks."""
+    try:
+        return await answer_guest_rich_text(cli, query_id, title, text), True
+    except BadRequest as e:
+        if "RICH_MESSAGE_BLOCK_UNSUPPORTED" not in str(e):
+            raise
+        logger.warning("Guest Rich 占位消息不受支持，降级为普通文本进度")
+        return await answer_guest_text(cli, query_id, title, text), False
+
+
 async def edit_guest_result(
     cli: Client,
     inline_message_id: str,
@@ -76,22 +114,15 @@ async def edit_guest_result(
     multi_media_notice: str,
     multi_photo_notice: str = "",
 ) -> str:
-    """Prefer legacy media messages unless a photo-only rich layout is required."""
+    """Use native media for one item and Rich Messages for complete collections."""
     media = rich.cache_media
     if media is not None:
         if not media:
             await cli.edit_inline_text(inline_message_id, text=caption)
             return "text"
 
-        contains_non_photo = any(item.type != CacheMediaType.PHOTO for item in media)
-        if len(media) == 1 or contains_non_photo:
-            primary = next(
-                (item for item in media if item.type in (CacheMediaType.VIDEO, CacheMediaType.ANIMATION)),
-                media[0],
-            )
-            if len(media) > 1:
-                caption = f"{caption}\n\n{format_label(multi_media_notice)}"
-
+        if len(media) == 1:
+            primary = media[0]
             input_media: InputMediaPhoto | InputMediaVideo | InputMediaAnimation
             match primary.type:
                 case CacheMediaType.PHOTO:
@@ -112,21 +143,30 @@ async def edit_guest_result(
     except BadRequest as e:
         if "RICH_MESSAGE_BLOCK_UNSUPPORTED" not in str(e) or not media:
             raise
-        if any(item.type != CacheMediaType.PHOTO for item in media):
-            raise
 
-        fallback_caption = caption
-        if multi_photo_notice:
-            fallback_caption = f"{caption}\n\n{format_label(multi_photo_notice)}"
-        await cli.edit_inline_media(
-            inline_message_id,
-            InputMediaPhoto(media[0].file_id, caption=fallback_caption),
+        primary = next(
+            (item for item in media if item.type in (CacheMediaType.VIDEO, CacheMediaType.ANIMATION)),
+            media[0],
         )
+        notice = multi_photo_notice if all(item.type == CacheMediaType.PHOTO for item in media) else multi_media_notice
+        fallback_caption = f"{caption}\n\n{format_label(notice)}" if notice else caption
+        fallback_media: InputMediaPhoto | InputMediaVideo | InputMediaAnimation
+        match primary.type:
+            case CacheMediaType.PHOTO:
+                fallback_media = InputMediaPhoto(primary.file_id, caption=fallback_caption)
+            case CacheMediaType.VIDEO:
+                fallback_media = InputMediaVideo(primary.file_id, caption=fallback_caption, supports_streaming=True)
+            case CacheMediaType.ANIMATION:
+                fallback_media = InputMediaAnimation(primary.file_id, caption=fallback_caption)
+            case CacheMediaType.DOCUMENT:
+                raise RichMessageUnsupported("通用文档不适用 Guest 媒体回复")
+
+        await cli.edit_inline_media(inline_message_id, fallback_media)
         logger.warning(
-            "Guest 多图 Rich Message 被 Telegram 拒绝，已降级为首图: "
-            f"layout={rich.layout}, media={len(media)}"
+            "Guest 多媒体 Rich Message 被 Telegram 拒绝，已降级为单媒体: "
+            f"layout={rich.layout}, media={len(media)}, fallback={primary.type.value}"
         )
-        return "standard-photo-rich-fallback"
+        return f"standard-{primary.type.value}-rich-fallback"
 
 
 async def send_cached_guest(
@@ -206,7 +246,18 @@ async def guest_parse(cli: Client, msg: Message) -> None:
         )
         return
 
-    sent = await answer_guest_text(
+    try:
+        await parse_rate_limiter.check(msg.from_user.id)
+    except ParseRateLimitExceeded as e:
+        await answer_guest_text(
+            cli,
+            msg.guest_query_id,
+            _t("聚合解析"),
+            format_label(_t(f"解析过于频繁, 请在 {e.retry_after:.1f}s 后重试")),
+        )
+        return
+
+    sent, rich_progress = await answer_guest_progress(
         cli,
         msg.guest_query_id,
         _t("聚合解析"),
@@ -219,6 +270,9 @@ async def guest_parse(cli: Client, msg: Message) -> None:
         t=_t,
         user_config=config,
         failure_text=format_label(_t("解析失败，请重新尝试。")),
+        rich=rich_progress,
+        guest_chat_id=getattr(getattr(msg, "chat", None), "id", None),
+        error_auto_delete_after=GUEST_ERROR_AUTO_DELETE_SECONDS,
     )
     parse_service = ParseService()
 

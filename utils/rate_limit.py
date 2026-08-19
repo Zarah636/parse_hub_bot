@@ -133,4 +133,4 @@ class ParseRateLimiter:
 parse_rate_limiter = ParseRateLimiter()
 parse_rate_limit = parse_rate_limiter.decorator
 
-__all__ = ["parse_rate_limit", "ParseRateLimitExceeded"]
+__all__ = ["parse_rate_limit", "parse_rate_limiter", "ParseRateLimitExceeded"]

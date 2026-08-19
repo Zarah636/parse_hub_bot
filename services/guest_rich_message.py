@@ -18,7 +18,7 @@ MAX_RICH_MEDIA = 50
 
 class RichLayout(StrEnum):
     SINGLE = "single"
-    STACKED = "stacked"
+    COLLAGE = "collage"
     SLIDESHOW = "slideshow"
 
 
@@ -52,7 +52,7 @@ class PreparedRichMedia:
 
 @dataclass(frozen=True, slots=True)
 class RichMessageBuild:
-    message: raw.types.InputRichMessage
+    message: raw.base.InputRichMessage
     layout: RichLayout | None
     media_count: int
     cache_media: list[CacheMedia] | None
@@ -66,9 +66,8 @@ def choose_layout(media: list[RichMediaSource]) -> RichLayout | None:
 
     kinds = {item.kind for item in media}
     if kinds == {RichMediaKind.PHOTO} and not any(item.is_live for item in media):
-        return RichLayout.STACKED
-    else:
-        return RichLayout.SLIDESHOW
+        return RichLayout.COLLAGE
+    return RichLayout.SLIDESHOW
 
 
 def media_sources_from_pipeline(result: PipelineResult) -> list[RichMediaSource]:
@@ -185,7 +184,9 @@ def assemble_rich_message(
     if not hide_title and not hide_desc and equivalent_caption_text(title, content):
         title = ""
     if title and not hide_title:
-        blocks.append(raw.types.PageBlockTitle(text=raw.types.TextPlain(text=title)))
+        # Outgoing Rich Messages support section headings, but not the legacy
+        # Instant View PageBlockTitle block.
+        blocks.append(raw.types.PageBlockHeading1(text=raw.types.TextPlain(text=title)))
     if content and not hide_desc:
         blocks.append(raw.types.PageBlockParagraph(text=raw.types.TextPlain(text=content)))
 
@@ -215,10 +216,8 @@ def assemble_rich_message(
     layout = choose_layout(media_sources)
     if layout == RichLayout.SINGLE:
         blocks.extend(media_blocks)
-    elif layout == RichLayout.STACKED:
-        # Telegram Guest EditInlineBotMessage rejects Collage/Slideshow photo
-        # containers, while individual PageBlockPhoto blocks are supported.
-        blocks.extend(media_blocks)
+    elif layout == RichLayout.COLLAGE:
+        blocks.append(raw.types.PageBlockCollage(items=media_blocks, caption=empty_caption))
     elif layout == RichLayout.SLIDESHOW:
         blocks.append(raw.types.PageBlockSlideshow(items=media_blocks, caption=empty_caption))
 
@@ -251,7 +250,7 @@ def assemble_rich_message(
     )
 
 
-async def edit_inline_rich_message(cli: Client, inline_message_id: str, message: raw.types.InputRichMessage) -> bool:
+async def edit_inline_rich_message(cli: Client, inline_message_id: str, message: raw.base.InputRichMessage) -> bool:
     unpacked = utils.unpack_inline_message_id(inline_message_id)
     session = await cli.get_session(unpacked.dc_id, is_media=True)
     return cast(
@@ -261,6 +260,19 @@ async def edit_inline_rich_message(cli: Client, inline_message_id: str, message:
             sleep_threshold=cli.sleep_threshold,
         ),
     )
+
+
+async def delete_inline_guest_message(cli: Client, inline_message_id: str, chat_id: int | str) -> bool:
+    """Delete a guest result when its inline identifier exposes a safe message ID."""
+    unpacked = utils.unpack_inline_message_id(inline_message_id)
+    if not isinstance(unpacked, raw.types.InputBotInlineMessageID64):
+        return False
+
+    if isinstance(chat_id, int) and utils.get_raw_peer_id(chat_id) != unpacked.owner_id:
+        return False
+
+    await cli.delete_messages(chat_id, unpacked.id)
+    return True
 
 
 def _validate_media(media: list[RichMediaSource]) -> list[RichMediaSource]:
