@@ -29,11 +29,11 @@ def photo(width: int = 1200, height: int = 1200) -> RichMediaSource:
 
 
 class GuestRichMessageTests(unittest.TestCase):
-    def test_adaptive_layout_policy(self) -> None:
+    def test_guest_compatible_layout_policy(self) -> None:
         self.assertEqual(choose_layout([photo()]), RichLayout.SINGLE)
-        self.assertEqual(choose_layout([photo(), photo()]), RichLayout.COLLAGE)
-        self.assertEqual(choose_layout([photo() for _ in range(10)]), RichLayout.SLIDESHOW)
-        self.assertEqual(choose_layout([photo(800, 2400), photo()]), RichLayout.SLIDESHOW)
+        self.assertEqual(choose_layout([photo(), photo()]), RichLayout.STACKED)
+        self.assertEqual(choose_layout([photo() for _ in range(10)]), RichLayout.STACKED)
+        self.assertEqual(choose_layout([photo(800, 2400), photo()]), RichLayout.STACKED)
         self.assertEqual(
             choose_layout([photo(), RichMediaSource(RichMediaKind.VIDEO)]),
             RichLayout.SLIDESHOW,
@@ -43,7 +43,7 @@ class GuestRichMessageTests(unittest.TestCase):
             RichLayout.SLIDESHOW,
         )
 
-    def test_collage_message_contains_text_media_and_source(self) -> None:
+    def test_stacked_message_contains_text_media_and_source(self) -> None:
         sources = [photo(), photo()]
         prepared = [
             PreparedRichMedia(
@@ -61,11 +61,12 @@ class GuestRichMessageTests(unittest.TestCase):
             prepared=prepared,
         )
 
-        self.assertEqual(result.layout, RichLayout.COLLAGE)
+        self.assertEqual(result.layout, RichLayout.STACKED)
         self.assertEqual(result.media_count, 2)
         self.assertTrue(any(isinstance(block, raw.types.PageBlockTitle) for block in result.message.blocks))
         self.assertTrue(any(isinstance(block, raw.types.PageBlockParagraph) for block in result.message.blocks))
-        self.assertTrue(any(isinstance(block, raw.types.PageBlockCollage) for block in result.message.blocks))
+        self.assertEqual(sum(isinstance(block, raw.types.PageBlockPhoto) for block in result.message.blocks), 2)
+        self.assertFalse(any(isinstance(block, raw.types.PageBlockCollage) for block in result.message.blocks))
         self.assertTrue(any(isinstance(block, raw.types.PageBlockFooter) for block in result.message.blocks))
         self.assertTrue(result.message.write())
 

@@ -14,13 +14,11 @@ from services.pipeline import PipelineResult
 from utils.helpers import equivalent_caption_text
 
 MAX_RICH_MEDIA = 50
-LONG_IMAGE_RATIO = 2.2
-EXTREME_RATIO_SPREAD = 2.5
 
 
 class RichLayout(StrEnum):
     SINGLE = "single"
-    COLLAGE = "collage"
+    STACKED = "stacked"
     SLIDESHOW = "slideshow"
 
 
@@ -67,21 +65,10 @@ def choose_layout(media: list[RichMediaSource]) -> RichLayout | None:
         return RichLayout.SINGLE
 
     kinds = {item.kind for item in media}
-    if kinds != {RichMediaKind.PHOTO} or any(item.is_live for item in media):
+    if kinds == {RichMediaKind.PHOTO} and not any(item.is_live for item in media):
+        return RichLayout.STACKED
+    else:
         return RichLayout.SLIDESHOW
-    if len(media) >= 10:
-        return RichLayout.SLIDESHOW
-
-    ratios = [item.width / item.height for item in media if item.width > 0 and item.height > 0]
-    if any(
-        max(item.width, item.height) / min(item.width, item.height) >= LONG_IMAGE_RATIO
-        for item in media
-        if item.width and item.height
-    ):
-        return RichLayout.SLIDESHOW
-    if ratios and max(ratios) / min(ratios) >= EXTREME_RATIO_SPREAD:
-        return RichLayout.SLIDESHOW
-    return RichLayout.COLLAGE
 
 
 def media_sources_from_pipeline(result: PipelineResult) -> list[RichMediaSource]:
@@ -228,8 +215,10 @@ def assemble_rich_message(
     layout = choose_layout(media_sources)
     if layout == RichLayout.SINGLE:
         blocks.extend(media_blocks)
-    elif layout == RichLayout.COLLAGE:
-        blocks.append(raw.types.PageBlockCollage(items=media_blocks, caption=empty_caption))
+    elif layout == RichLayout.STACKED:
+        # Telegram Guest EditInlineBotMessage rejects Collage/Slideshow photo
+        # containers, while individual PageBlockPhoto blocks are supported.
+        blocks.extend(media_blocks)
     elif layout == RichLayout.SLIDESHOW:
         blocks.append(raw.types.PageBlockSlideshow(items=media_blocks, caption=empty_caption))
 

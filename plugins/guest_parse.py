@@ -1,6 +1,7 @@
 from typing import cast
 
 from pyrogram import Client
+from pyrogram.errors import BadRequest
 from pyrogram.types import (
     InlineQueryResultArticle,
     InputMediaAnimation,
@@ -73,6 +74,7 @@ async def edit_guest_result(
     caption: str,
     *,
     multi_media_notice: str,
+    multi_photo_notice: str = "",
 ) -> str:
     """Prefer legacy media messages unless a photo-only rich layout is required."""
     media = rich.cache_media
@@ -104,8 +106,27 @@ async def edit_guest_result(
             await cli.edit_inline_media(inline_message_id, input_media)
             return f"standard-{primary.type.value}"
 
-    await edit_inline_rich_message(cli, inline_message_id, rich.message)
-    return f"rich-{rich.layout or 'text'}"
+    try:
+        await edit_inline_rich_message(cli, inline_message_id, rich.message)
+        return f"rich-{rich.layout or 'text'}"
+    except BadRequest as e:
+        if "RICH_MESSAGE_BLOCK_UNSUPPORTED" not in str(e) or not media:
+            raise
+        if any(item.type != CacheMediaType.PHOTO for item in media):
+            raise
+
+        fallback_caption = caption
+        if multi_photo_notice:
+            fallback_caption = f"{caption}\n\n{format_label(multi_photo_notice)}"
+        await cli.edit_inline_media(
+            inline_message_id,
+            InputMediaPhoto(media[0].file_id, caption=fallback_caption),
+        )
+        logger.warning(
+            "Guest 多图 Rich Message 被 Telegram 拒绝，已降级为首图: "
+            f"layout={rich.layout}, media={len(media)}"
+        )
+        return "standard-photo-rich-fallback"
 
 
 async def send_cached_guest(
@@ -116,6 +137,7 @@ async def send_cached_guest(
     config: SettingsConfig,
     *,
     multi_media_notice: str,
+    multi_photo_notice: str,
 ) -> bool:
     """使用原项目的 Telegram file_id 缓存更新 Guest 消息。"""
     caption = build_caption_by_str(
@@ -142,6 +164,7 @@ async def send_cached_guest(
             rich,
             caption,
             multi_media_notice=multi_media_notice,
+            multi_photo_notice=multi_photo_notice,
         )
         logger.info(f"Guest 使用 Telegram 持久缓存: delivery={delivery}, media={rich.media_count}")
         return True
@@ -171,6 +194,7 @@ async def guest_parse(cli: Client, msg: Message) -> None:
     multi_media_notice = _t(
         "访客模式暂不支持一次发送多个含视频的媒体，已发送其中一个；请私聊 Bot 获取完整内容。"
     )
+    multi_photo_notice = _t("访客模式暂时无法发送完整图集，已发送首图；请私聊 Bot 获取完整内容。")
 
     url = extract_guest_url(msg)
     if not url:
@@ -219,6 +243,7 @@ async def guest_parse(cli: Client, msg: Message) -> None:
             raw_url,
             config,
             multi_media_notice=multi_media_notice,
+            multi_photo_notice=multi_photo_notice,
         ):
             return
 
@@ -256,6 +281,7 @@ async def guest_parse(cli: Client, msg: Message) -> None:
                 rich,
                 caption,
                 multi_media_notice=multi_media_notice,
+                multi_photo_notice=multi_photo_notice,
             )
             if rich.cache_media is not None:
                 try:

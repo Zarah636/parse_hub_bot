@@ -10,6 +10,7 @@ os.environ.setdefault("API_HASH", "test")
 os.environ.setdefault("BOT_TOKEN", "1:test")
 
 from pyrogram import raw  # noqa: E402
+from pyrogram.errors import BadRequest  # noqa: E402
 from pyrogram.types import InputMediaPhoto, InputMediaVideo, Message  # noqa: E402
 
 from plugins.guest_parse import edit_guest_result, extract_guest_url, guest_parse  # noqa: E402
@@ -138,7 +139,7 @@ class GuestParseAsyncTests(unittest.IsolatedAsyncioTestCase):
         cli = MagicMock()
         rich = RichMessageBuild(
             message=raw.types.InputRichMessage(blocks=[raw.types.PageBlockDivider()]),
-            layout=RichLayout.COLLAGE,
+            layout=RichLayout.STACKED,
             media_count=2,
             cache_media=[
                 CacheMedia(type=CacheMediaType.PHOTO, file_id="photo-1"),
@@ -155,8 +156,42 @@ class GuestParseAsyncTests(unittest.IsolatedAsyncioTestCase):
                 multi_media_notice="notice",
             )
 
-        self.assertEqual(delivery, "rich-collage")
+        self.assertEqual(delivery, "rich-stacked")
         edit_rich.assert_awaited_once_with(cli, "inline-id", rich.message)
+
+    async def test_photo_album_falls_back_to_first_photo_when_rich_blocks_are_rejected(self) -> None:
+        cli = MagicMock()
+        cli.edit_inline_media = AsyncMock(return_value=True)
+        rich = RichMessageBuild(
+            message=raw.types.InputRichMessage(blocks=[raw.types.PageBlockDivider()]),
+            layout=RichLayout.STACKED,
+            media_count=2,
+            cache_media=[
+                CacheMedia(type=CacheMediaType.PHOTO, file_id="photo-1"),
+                CacheMedia(type=CacheMediaType.PHOTO, file_id="photo-2"),
+            ],
+        )
+        error = BadRequest(
+            value="[400 RICH_MESSAGE_BLOCK_UNSUPPORTED]",
+            rpc_name="messages.EditInlineBotMessage",
+        )
+
+        with patch("plugins.guest_parse.edit_inline_rich_message", AsyncMock(side_effect=error)):
+            delivery = await edit_guest_result(
+                cli,
+                "inline-id",
+                rich,
+                "caption",
+                multi_media_notice="video notice",
+                multi_photo_notice="photo notice",
+            )
+
+        self.assertEqual(delivery, "standard-photo-rich-fallback")
+        assert cli.edit_inline_media.await_args is not None
+        media = cli.edit_inline_media.await_args.args[1]
+        self.assertIsInstance(media, InputMediaPhoto)
+        self.assertEqual(media.media, "photo-1")
+        self.assertIn("photo notice", media.caption)
 
     async def test_mixed_album_falls_back_to_one_video_with_notice(self) -> None:
         cli = MagicMock()
