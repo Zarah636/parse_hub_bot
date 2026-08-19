@@ -19,6 +19,8 @@ from utils.event_loop import setup_optimized_event_loop
 pillow_heif.register_heif_opener()
 
 setup_logging(debug=bs.debug)
+if bs.debug:
+    logger.enable("parsehub")
 
 setup_optimized_event_loop()
 loop = asyncio.new_event_loop()
@@ -49,13 +51,13 @@ class Bot(Client):
         await flyinglife.initialize()
         parse_cache.start_cleanup()
         inline_flyinglife_cache.start_cleanup()
-        await super().start()
+        await super().start(*args, **kwargs)
         await self.set_menu()
         return self
 
     async def stop(self, *args: Any, **kwargs: Any) -> None:
         ws.exit_flag = True
-        await super().stop()
+        await super().stop(*args, **kwargs)
         await flyinglife.close()
         await close_db()
         # 结束时清理下载残留
