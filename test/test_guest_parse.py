@@ -14,14 +14,12 @@ from pyrogram.errors import BadRequest  # noqa: E402
 from pyrogram.types import (  # noqa: E402
     InputMediaPhoto,
     InputMediaVideo,
-    InputRichMessageContent,
     InputTextMessageContent,
     Message,
 )
 
 from plugins.guest_parse import (  # noqa: E402
     answer_guest_progress,
-    answer_guest_rich_text,
     edit_guest_result,
     extract_guest_url,
     guest_parse,
@@ -134,37 +132,17 @@ class GuestParseTests(unittest.TestCase):
 
 
 class GuestParseAsyncTests(unittest.IsolatedAsyncioTestCase):
-    async def test_rich_placeholder_is_answered_once(self) -> None:
+    async def test_guest_progress_uses_plain_text_content(self) -> None:
         cli = MagicMock()
         cli.answer_guest_query = AsyncMock(return_value=SimpleNamespace(inline_message_id="inline-id"))
 
-        sent = await answer_guest_rich_text(cli, "query-id", "聚合解析", "解析中")
+        sent = await answer_guest_progress(cli, "query-id", "聚合解析", "解析中")
 
         self.assertEqual(sent.inline_message_id, "inline-id")
         cli.answer_guest_query.assert_awaited_once()
         result = cli.answer_guest_query.await_args.args[1]
-        self.assertIsInstance(result.input_message_content, InputRichMessageContent)
-
-    async def test_unsupported_rich_placeholder_falls_back_to_text(self) -> None:
-        cli = MagicMock()
-        error = BadRequest(
-            value="[400 RICH_MESSAGE_BLOCK_UNSUPPORTED]",
-            rpc_name="messages.SetBotGuestChatResult",
-        )
-
-        with (
-            patch("plugins.guest_parse.answer_guest_rich_text", AsyncMock(side_effect=error)) as answer_rich,
-            patch(
-                "plugins.guest_parse.answer_guest_text",
-                AsyncMock(return_value=SimpleNamespace(inline_message_id="inline-id")),
-            ) as answer_text,
-        ):
-            sent, rich = await answer_guest_progress(cli, "query-id", "聚合解析", "解析中")
-
-        self.assertFalse(rich)
-        self.assertEqual(sent.inline_message_id, "inline-id")
-        answer_rich.assert_awaited_once()
-        answer_text.assert_awaited_once()
+        self.assertIsInstance(result.input_message_content, InputTextMessageContent)
+        self.assertTrue(result.input_message_content.link_preview_options.is_disabled)
 
     async def test_rate_limited_guest_is_answered_without_starting_pipeline(self) -> None:
         cli = MagicMock()
@@ -465,13 +443,21 @@ class GuestParseAsyncTests(unittest.IsolatedAsyncioTestCase):
             patch("plugins.guest_parse.parse_cache.get", AsyncMock(return_value=None)),
             patch("plugins.guest_parse.HybridParsePipeline", return_value=pipeline) as pipeline_cls,
             patch("plugins.guest_parse.build_pipeline_rich_message", AsyncMock(return_value=rich)),
-            patch("plugins.parse.reporters.edit_inline_rich_message", AsyncMock(return_value=True)),
+            patch("plugins.guest_parse.edit_inline_rich_message", AsyncMock(return_value=True)) as edit_result_rich,
+            patch(
+                "plugins.parse.reporters.edit_inline_rich_message", AsyncMock(return_value=True)
+            ) as edit_progress_rich,
             patch("plugins.guest_parse.t_", {"test": lambda text: text}),
         ):
             await guest_parse(cli, message)
 
         self.assertTrue(pipeline_cls.call_args.kwargs["singleflight"])
+        cli.answer_guest_query.assert_awaited_once()
+        initial_result = cli.answer_guest_query.await_args.args[1]
+        self.assertIsInstance(initial_result.input_message_content, InputTextMessageContent)
         cli.edit_inline_media.assert_awaited_once()
+        edit_progress_rich.assert_not_awaited()
+        edit_result_rich.assert_not_awaited()
         cache_set.assert_awaited_once()
         assert cache_set.await_args is not None
         cache_key, cache_entry = cache_set.await_args.args

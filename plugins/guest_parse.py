@@ -7,8 +7,6 @@ from pyrogram.types import (
     InputMediaAnimation,
     InputMediaPhoto,
     InputMediaVideo,
-    InputRichMessage,
-    InputRichMessageContent,
     InputTextMessageContent,
     LinkPreviewOptions,
     Message,
@@ -80,29 +78,9 @@ async def answer_guest_text(cli: Client, query_id: str, title: str, text: str) -
     )
 
 
-async def answer_guest_rich_text(cli: Client, query_id: str, title: str, text: str) -> SentGuestMessage:
-    """Create an editable Rich Message placeholder for a long-running guest request."""
-    return cast(
-        SentGuestMessage,
-        await cli.answer_guest_query(
-            query_id,
-            InlineQueryResultArticle(
-                title=title,
-                input_message_content=InputRichMessageContent(InputRichMessage(markdown=text)),
-            ),
-        ),
-    )
-
-
-async def answer_guest_progress(cli: Client, query_id: str, title: str, text: str) -> tuple[SentGuestMessage, bool]:
-    """Prefer a Rich placeholder, with a narrow fallback for unsupported blocks."""
-    try:
-        return await answer_guest_rich_text(cli, query_id, title, text), True
-    except BadRequest as e:
-        if "RICH_MESSAGE_BLOCK_UNSUPPORTED" not in str(e):
-            raise
-        logger.warning("Guest Rich 占位消息不受支持，降级为普通文本进度")
-        return await answer_guest_text(cli, query_id, title, text), False
+async def answer_guest_progress(cli: Client, query_id: str, title: str, text: str) -> SentGuestMessage:
+    """Keep the whole Guest progress phase compatible with non-Rich clients."""
+    return await answer_guest_text(cli, query_id, title, text)
 
 
 async def edit_guest_result(
@@ -257,7 +235,7 @@ async def guest_parse(cli: Client, msg: Message) -> None:
         )
         return
 
-    sent, rich_progress = await answer_guest_progress(
+    sent = await answer_guest_progress(
         cli,
         msg.guest_query_id,
         _t("聚合解析"),
@@ -270,7 +248,6 @@ async def guest_parse(cli: Client, msg: Message) -> None:
         t=_t,
         user_config=config,
         failure_text=format_label(_t("解析失败，请重新尝试。")),
-        rich=rich_progress,
         guest_chat_id=getattr(getattr(msg, "chat", None), "id", None),
         error_auto_delete_after=GUEST_ERROR_AUTO_DELETE_SECONDS,
     )
