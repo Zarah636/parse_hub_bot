@@ -58,6 +58,32 @@ class RichMessageBuild:
     cache_media: list[CacheMedia] | None
 
 
+def replace_slideshow_with_collage(message: raw.base.InputRichMessage) -> raw.base.InputRichMessage | None:
+    """Reuse uploaded Rich media while retrying an unsupported slideshow as a collage."""
+    if not isinstance(message, raw.types.InputRichMessage):
+        return None
+
+    replaced = False
+    blocks: list[raw.base.PageBlock] = []
+    for block in message.blocks:
+        if isinstance(block, raw.types.PageBlockSlideshow):
+            blocks.append(raw.types.PageBlockCollage(items=block.items, caption=block.caption))
+            replaced = True
+        else:
+            blocks.append(block)
+
+    if not replaced:
+        return None
+    return raw.types.InputRichMessage(
+        blocks=blocks,
+        rtl=message.rtl,
+        noautolink=message.noautolink,
+        photos=message.photos,
+        documents=message.documents,
+        users=message.users,
+    )
+
+
 def choose_layout(media: list[RichMediaSource]) -> RichLayout | None:
     if not media:
         return None

@@ -39,6 +39,31 @@ class FakeSessionContext(AbstractAsyncContextManager[object]):
         return None
 
 
+def mixed_rich_build() -> RichMessageBuild:
+    empty_caption = raw.types.PageCaption(text=raw.types.TextEmpty(), credit=raw.types.TextEmpty())
+    photo_1 = raw.types.InputPhoto(id=1, access_hash=11, file_reference=b"photo-1")
+    photo_2 = raw.types.InputPhoto(id=3, access_hash=13, file_reference=b"photo-2")
+    video = raw.types.InputDocument(id=2, access_hash=12, file_reference=b"video")
+    slideshow = raw.types.PageBlockSlideshow(
+        items=[
+            raw.types.PageBlockPhoto(photo_id=photo_1.id, caption=empty_caption),
+            raw.types.PageBlockVideo(video_id=video.id, caption=empty_caption),
+            raw.types.PageBlockPhoto(photo_id=photo_2.id, caption=empty_caption),
+        ],
+        caption=empty_caption,
+    )
+    return RichMessageBuild(
+        message=raw.types.InputRichMessage(blocks=[slideshow], photos=[photo_1, photo_2], documents=[video]),
+        layout=RichLayout.SLIDESHOW,
+        media_count=3,
+        cache_media=[
+            CacheMedia(type=CacheMediaType.PHOTO, file_id="photo-1-file-id"),
+            CacheMedia(type=CacheMediaType.VIDEO, file_id="video-file-id"),
+            CacheMedia(type=CacheMediaType.PHOTO, file_id="photo-2-file-id"),
+        ],
+    )
+
+
 class GuestParseTests(unittest.TestCase):
     def test_extracts_supported_url_only_from_replied_message(self) -> None:
         parser = MagicMock()
@@ -293,15 +318,7 @@ class GuestParseAsyncTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_mixed_album_uses_complete_rich_message(self) -> None:
         cli = MagicMock()
-        rich = RichMessageBuild(
-            message=raw.types.InputRichMessage(blocks=[raw.types.PageBlockDivider()]),
-            layout=RichLayout.SLIDESHOW,
-            media_count=2,
-            cache_media=[
-                CacheMedia(type=CacheMediaType.PHOTO, file_id="photo-file-id"),
-                CacheMedia(type=CacheMediaType.VIDEO, file_id="video-file-id"),
-            ],
-        )
+        rich = mixed_rich_build()
 
         with patch("plugins.guest_parse.edit_inline_rich_message", AsyncMock(return_value=True)) as edit_rich:
             delivery = await edit_guest_result(
@@ -315,24 +332,47 @@ class GuestParseAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(delivery, "rich-slideshow")
         edit_rich.assert_awaited_once_with(cli, "inline-id", rich.message)
 
-    async def test_mixed_album_falls_back_to_video_only_after_rich_rejection(self) -> None:
+    async def test_mixed_album_retries_complete_collage_after_slideshow_rejection(self) -> None:
         cli = MagicMock()
         cli.edit_inline_media = AsyncMock(return_value=True)
-        rich = RichMessageBuild(
-            message=raw.types.InputRichMessage(blocks=[raw.types.PageBlockDivider()]),
-            layout=RichLayout.SLIDESHOW,
-            media_count=2,
-            cache_media=[
-                CacheMedia(type=CacheMediaType.PHOTO, file_id="photo-file-id"),
-                CacheMedia(type=CacheMediaType.VIDEO, file_id="video-file-id"),
-            ],
-        )
+        rich = mixed_rich_build()
         error = BadRequest(
             value="[400 RICH_MESSAGE_BLOCK_UNSUPPORTED]",
             rpc_name="messages.EditInlineBotMessage",
         )
 
-        with patch("plugins.guest_parse.edit_inline_rich_message", AsyncMock(side_effect=error)):
+        with patch(
+            "plugins.guest_parse.edit_inline_rich_message", AsyncMock(side_effect=[error, True])
+        ) as edit_rich:
+            delivery = await edit_guest_result(
+                cli,
+                "inline-id",
+                rich,
+                "caption",
+                multi_media_notice="video notice",
+            )
+
+        self.assertEqual(delivery, "rich-collage-retry")
+        self.assertEqual(edit_rich.await_count, 2)
+        original_message = cast(raw.types.InputRichMessage, rich.message)
+        retry_message = cast(raw.types.InputRichMessage, edit_rich.await_args_list[1].args[2])
+        self.assertIsInstance(retry_message.blocks[0], raw.types.PageBlockCollage)
+        self.assertEqual(retry_message.photos, original_message.photos)
+        self.assertEqual(retry_message.documents, original_message.documents)
+        cli.edit_inline_media.assert_not_awaited()
+
+    async def test_mixed_album_falls_back_to_video_only_after_both_rich_layouts_are_rejected(self) -> None:
+        cli = MagicMock()
+        cli.edit_inline_media = AsyncMock(return_value=True)
+        rich = mixed_rich_build()
+        error = BadRequest(
+            value="[400 RICH_MESSAGE_BLOCK_UNSUPPORTED]",
+            rpc_name="messages.EditInlineBotMessage",
+        )
+
+        with patch(
+            "plugins.guest_parse.edit_inline_rich_message", AsyncMock(side_effect=[error, error])
+        ) as edit_rich:
             delivery = await edit_guest_result(
                 cli,
                 "inline-id",
@@ -342,6 +382,9 @@ class GuestParseAsyncTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(delivery, "standard-video-rich-fallback")
+        self.assertEqual(edit_rich.await_count, 2)
+        retry_message = cast(raw.types.InputRichMessage, edit_rich.await_args_list[1].args[2])
+        self.assertIsInstance(retry_message.blocks[0], raw.types.PageBlockCollage)
         media = cli.edit_inline_media.await_args.args[1]
         self.assertIsInstance(media, InputMediaVideo)
         self.assertEqual(media.media, "video-file-id")

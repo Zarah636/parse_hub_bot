@@ -31,11 +31,13 @@ from services import (
 )
 from services.cache import parse_cache, persistent_cache
 from services.guest_rich_message import (
+    RichLayout,
     RichMessageBuild,
     RichMessageUnsupported,
     build_cached_rich_message,
     build_pipeline_rich_message,
     edit_inline_rich_message,
+    replace_slideshow_with_collage,
 )
 from utils.helpers import with_request_id
 from utils.rate_limit import ParseRateLimitExceeded, parse_rate_limiter
@@ -122,6 +124,27 @@ async def edit_guest_result(
         if "RICH_MESSAGE_BLOCK_UNSUPPORTED" not in str(e) or not media:
             raise
 
+        slideshow_error = e
+        if rich.layout == RichLayout.SLIDESHOW:
+            collage_message = replace_slideshow_with_collage(rich.message)
+            if collage_message is not None:
+                try:
+                    await edit_inline_rich_message(cli, inline_message_id, collage_message)
+                except BadRequest as retry_error:
+                    if "RICH_MESSAGE_BLOCK_UNSUPPORTED" not in str(retry_error):
+                        raise
+                    e = retry_error
+                    logger.warning(
+                        "Guest Slideshow 和 Collage 均被 Telegram 拒绝: "
+                        f"media={len(media)}, slideshow_error={slideshow_error}, collage_error={retry_error}"
+                    )
+                else:
+                    logger.warning(
+                        "Guest Slideshow 被 Telegram 拒绝，改用完整 Collage 成功: "
+                        f"media={len(media)}, error={slideshow_error}"
+                    )
+                    return "rich-collage-retry"
+
         primary = next(
             (item for item in media if item.type in (CacheMediaType.VIDEO, CacheMediaType.ANIMATION)),
             media[0],
@@ -142,7 +165,7 @@ async def edit_guest_result(
         await cli.edit_inline_media(inline_message_id, fallback_media)
         logger.warning(
             "Guest 多媒体 Rich Message 被 Telegram 拒绝，已降级为单媒体: "
-            f"layout={rich.layout}, media={len(media)}, fallback={primary.type.value}"
+            f"layout={rich.layout}, media={len(media)}, fallback={primary.type.value}, error={e}"
         )
         return f"standard-{primary.type.value}-rich-fallback"
 
