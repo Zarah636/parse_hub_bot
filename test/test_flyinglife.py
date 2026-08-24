@@ -10,7 +10,13 @@ os.environ.setdefault("API_ID", "1")
 os.environ.setdefault("API_HASH", "test")
 os.environ.setdefault("BOT_TOKEN", "1:test")
 
-from parsehub.types import ImageParseResult, VideoParseResult, VideoRef  # noqa: E402
+from parsehub.types import (  # noqa: E402
+    ImageParseResult,
+    ImageRef,
+    MultimediaParseResult,
+    VideoParseResult,
+    VideoRef,
+)
 
 from core import bs  # noqa: E402
 from services.flyinglife import (  # noqa: E402
@@ -126,6 +132,63 @@ class FlyingLifeParseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result.media or []), 2)
         self.assertIn("1.webp", (result.media or [])[0].url)
         self.assertIn("2.webp", (result.media or [])[1].url)
+
+    async def test_mixed_result_keeps_video_cover_and_standalone_images(self) -> None:
+        service = FlyingLifeService()
+        service._api_request = AsyncMock(  # type: ignore[method-assign]
+            return_value={
+                "text": "混合媒体文案",
+                "images": [
+                    "https://example.com/video-cover.webp",
+                    "https://example.com/photo-1.webp",
+                    "https://example.com/photo-2.webp",
+                ],
+                "videos": ["https://example.com/video.mp4"],
+            }
+        )
+
+        result = await service.parse("https://v.douyin.com/example/", "https://www.douyin.com/video/1")
+
+        self.assertIsInstance(result, MultimediaParseResult)
+        media = list(result.media or [])
+        self.assertEqual(len(media), 3)
+        self.assertIsInstance(media[0], VideoRef)
+        self.assertIn("type=video", media[0].url)
+        self.assertIn("video-cover.webp", media[0].thumb_url or "")
+        self.assertTrue(all(isinstance(item, ImageRef) for item in media[1:]))
+        self.assertIn("photo-1.webp", media[1].url)
+        self.assertIn("photo-2.webp", media[2].url)
+
+    async def test_mixed_download_without_cover_still_downloads_video_and_photos(self) -> None:
+        service = FlyingLifeService()
+        parse_result = MultimediaParseResult(
+            media=[
+                VideoRef(
+                    url="https://example.com/video.mp4",
+                    thumb_url="https://example.com/video-cover.webp",
+                ),
+                ImageRef(url="https://example.com/photo-1.webp"),
+                ImageRef(url="https://example.com/photo-2.webp"),
+            ]
+        )
+        parse_result.raw_url = "https://www.douyin.com/video/1"
+
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            patch("services.flyinglife.bs.download_dir", Path(temp_dir)),
+            patch("services.flyinglife.VideoFile", side_effect=lambda path: MagicMock(path=path)),
+            patch("services.flyinglife.ImageFile", side_effect=lambda path: MagicMock(path=path)),
+            patch.object(service, "_download_proxy", AsyncMock()) as download_proxy,
+        ):
+            result = await service.download(parse_result, download_video_cover=False)
+
+        self.assertEqual(download_proxy.await_count, 3)
+        self.assertEqual(
+            [call.args[2] for call in download_proxy.await_args_list],
+            ["video", "image", "image"],
+        )
+        media = list(result.media)
+        self.assertEqual([item.path.name for item in media], ["001.mp4", "002.jpg", "003.jpg"])
 
     async def test_audio_result_falls_back(self) -> None:
         service = FlyingLifeService()

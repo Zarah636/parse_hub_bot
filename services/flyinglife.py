@@ -19,6 +19,7 @@ from parsehub.types import (
     ImageFile,
     ImageParseResult,
     ImageRef,
+    MultimediaParseResult,
     ProgressUnit,
     VideoFile,
     VideoParseResult,
@@ -317,7 +318,22 @@ class FlyingLifeService:
                 raise FlyingLifeParseError("第一版暂不支持多视频结果")
             cover_url = media_url(payload.images[0], "image") if payload.images else None
             video_ref = VideoRef(url=media_url(videos[0], "video"), thumb_url=cover_url)
-            result: AnyParseResult = VideoParseResult(title=payload.title, content=payload.text, video=video_ref)
+            # FlyingLife includes the video poster as the first entry in
+            # ``images``.  Older code treated every response containing a
+            # video as video-only, so all real photos after that poster were
+            # silently discarded before the download and Guest send stages.
+            image_refs = [ImageRef(url=media_url(item, "image")) for item in payload.images[1:]]
+            if image_refs:
+                logger.info(
+                    f"FlyingLife 识别混合媒体: videos=1, video_covers=1, images={len(image_refs)}"
+                )
+                result: AnyParseResult = MultimediaParseResult(
+                    title=payload.title,
+                    content=payload.text,
+                    media=[video_ref, *image_refs],
+                )
+            else:
+                result = VideoParseResult(title=payload.title, content=payload.text, video=video_ref)
         elif payload.images:
             image_refs = [ImageRef(url=media_url(item, "image")) for item in payload.images]
             result = ImageParseResult(title=payload.title, content=payload.text, photo=image_refs)
