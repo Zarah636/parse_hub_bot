@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from pathlib import Path
 
 from parsehub import AnyParseResult
 from parsehub.types import (
@@ -53,8 +54,17 @@ from services import (
     UserService,
     flyinglife,
 )
-from services.cache import CacheEntry, CacheMediaType, inline_flyinglife_cache, parse_cache, persistent_cache
-from services.media import resolve_media_info
+from services.cache import (
+    CacheEntry,
+    CacheMedia,
+    CacheMediaType,
+    CacheParseResult,
+    inline_flyinglife_cache,
+    parse_cache,
+    persistent_cache,
+)
+from services.guest_rich_message import RichMediaKind, RichMediaSource, prepare_rich_media
+from services.media import create_video_thumbnail, resolve_media_info
 from utils.helpers import to_list, with_request_id
 
 logger = logger.bind(name="InlineParse")
@@ -93,6 +103,69 @@ def resolve_inline_video_cover(video_ref: VideoRef, config: SettingsConfig) -> s
     return str(video_ref.thumb_url) if config.video_cover and video_ref.thumb_url else None
 
 
+def build_inline_video_media(
+    media_source: str,
+    caption: str,
+    *,
+    video_cover: str | None,
+    thumbnail_path: str | None,
+    width: int,
+    height: int,
+    duration: int,
+) -> InputMediaVideo:
+    if video_cover:
+        return InputMediaVideo(
+            media_source,
+            caption=caption,
+            thumb=thumbnail_path,
+            video_cover=video_cover,
+            duration=duration,
+            width=width,
+            height=height,
+            supports_streaming=True,
+        )
+    return InputMediaVideo(
+        media_source,
+        caption=caption,
+        thumb=thumbnail_path,
+        duration=duration,
+        width=width,
+        height=height,
+        supports_streaming=True,
+    )
+
+
+async def upload_inline_video_for_cache(
+    cli: Client,
+    file_path: str,
+    *,
+    thumbnail_path: str | None,
+    width: int,
+    height: int,
+    duration: int,
+) -> CacheMedia:
+    """将内联视频上传为可复用的 Telegram file_id。"""
+    prepared = await prepare_rich_media(
+        cli,
+        RichMediaSource(
+            RichMediaKind.VIDEO,
+            path=Path(file_path),
+            thumbnail_path=Path(thumbnail_path) if thumbnail_path else None,
+            width=width,
+            height=height,
+            duration=duration,
+        ),
+    )
+    if prepared.cache_media is None:
+        raise RuntimeError("内联视频上传后未生成可缓存的 file_id")
+    return prepared.cache_media
+
+
+def is_inline_cache_ready(entry: CacheEntry) -> bool:
+    """缓存视频必须自带 thumbnail，否则 cached inline 无法另传封面。"""
+    return all(item.type != CacheMediaType.VIDEO or item.has_thumbnail for item in entry.media or [])
+
+
 @Client.on_inline_query(~platform_filter(False))
 async def inline_parse_tip(_: Client, inline_query: InlineQuery) -> None:
     async with get_session() as session:
@@ -122,10 +195,13 @@ async def call_inline_parse(cli: Client, inline_query: InlineQuery) -> None:
         lang = await UserService(session).get_lang(inline_query.from_user.id)
         config = await SettingsService(session).get_config_by_user(inline_query.from_user.id)
     if cached := await persistent_cache.get(raw_url):
-        logger.debug("inline: 缓存命中, 构建 cached 结果")
-        results = build_cached_inline_results(cached, raw_url, lang, config)
-        await inline_query.answer(results[:50], cache_time=60)
-        return
+        if is_inline_cache_ready(cached):
+            logger.debug("inline: 缓存命中, 构建 cached 结果")
+            results = build_cached_inline_results(cached, raw_url, lang, config)
+            await inline_query.answer(results[:50], cache_time=60)
+            return
+        logger.info("inline: 视频缓存缺少 thumbnail, 移除后重新处理")
+        await persistent_cache.remove(raw_url)
 
     parse_result = await resolve_inline_preview(inline_query.query, raw_url, platform_id)
 
@@ -182,6 +258,8 @@ async def inline_result_download(cli: Client, chosen_result: ChosenInlineResult)
 
         parse_result = result.parse_result
         logger.info(f"inline 下载引擎: {result.engine}")
+        if result.engine != "flyinglife":
+            await parse_cache.set(raw_url, parse_result)
         caption = build_caption(parse_result, config=config)
 
         # ── 上传 ──
@@ -198,29 +276,85 @@ async def inline_result_download(cli: Client, chosen_result: ChosenInlineResult)
             file_path_str = str(file_paths[0])
             logger.debug(f"inline 上传文件: {file_path_str}")
             width, height, duration = resolve_media_info(processed, file_path_str)
+            thumbnail_path = await create_video_thumbnail(file_path_str, duration or 0)
+            thumbnail_path_str = str(thumbnail_path) if thumbnail_path else None
 
             video_cover = resolve_inline_video_cover(video_ref, config)
-            media = (
-                InputMediaVideo(
+            cache_media: CacheMedia | None = None
+            media_source = file_path_str
+            try:
+                cache_media = await upload_inline_video_for_cache(
+                    cli,
                     file_path_str,
-                    caption=caption,
-                    video_cover=video_cover,
-                    duration=duration or 0,
+                    thumbnail_path=thumbnail_path_str,
                     width=width or 0,
                     height=height or 0,
-                    supports_streaming=True,
-                )
-                if video_cover
-                else InputMediaVideo(
-                    file_path_str,
-                    caption=caption,
                     duration=duration or 0,
-                    width=width or 0,
-                    height=height or 0,
-                    supports_streaming=True,
                 )
+                media_source = cache_media.file_id
+                logger.debug("inline 视频已预上传为可缓存 file_id")
+            except Exception as cache_upload_error:
+                logger.warning(
+                    "inline 视频预上传失败, 回退本地文件上传: "
+                    f"{type(cache_upload_error).__name__}: {cache_upload_error}"
+                )
+
+            media = build_inline_video_media(
+                media_source,
+                caption,
+                video_cover=video_cover,
+                thumbnail_path=thumbnail_path_str,
+                duration=duration or 0,
+                width=width or 0,
+                height=height or 0,
             )
-            await cli.edit_inline_media(inline_message_id, media=media)
+            try:
+                await cli.edit_inline_media(inline_message_id, media=media)
+            except Exception as cached_edit_error:
+                if cache_media is None:
+                    raise
+                logger.warning(
+                    "inline file_id 编辑失败, 回退本地文件上传: "
+                    f"{type(cached_edit_error).__name__}: {cached_edit_error}"
+                )
+                cache_media = None
+                fallback_media = build_inline_video_media(
+                    file_path_str,
+                    caption,
+                    video_cover=video_cover,
+                    thumbnail_path=thumbnail_path_str,
+                    duration=duration or 0,
+                    width=width or 0,
+                    height=height or 0,
+                )
+                await cli.edit_inline_media(inline_message_id, media=fallback_media)
+
+            media_refs = to_list(parse_result.media)
+            complete_single_media = (
+                cache_media is not None
+                and cache_media.has_thumbnail
+                and len(media_refs) == 1
+                and len(result.processed_list) == 1
+                and len(file_paths) == 1
+            )
+            if complete_single_media:
+                assert cache_media is not None
+                try:
+                    await persistent_cache.set(
+                        raw_url,
+                        CacheEntry(
+                            parse_result=CacheParseResult(
+                                title=parse_result.title,
+                                content=parse_result.content,
+                            ),
+                            media=[cache_media],
+                        ),
+                    )
+                    logger.info("inline 视频已写入 file_id 持久缓存")
+                except Exception as cache_error:
+                    logger.warning(f"inline 写入持久缓存失败: {type(cache_error).__name__}: {cache_error}")
+            elif cache_media is not None:
+                logger.debug("inline 结果不是完整单媒体, 跳过持久缓存")
         except Exception as e:
             logger.opt(exception=e).debug("详细堆栈")
             logger.error(f"inline 上传失败: {e}")

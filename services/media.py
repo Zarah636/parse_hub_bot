@@ -1,3 +1,4 @@
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -6,7 +7,7 @@ from parsehub.types import AnyMediaFile, DownloadResult, ProgressUnit
 from parsehub.utils.media_info import MediaInfoReader
 
 from log import logger
-from utils.helpers import to_list
+from utils.helpers import run_cmd, to_list
 from utils.media_processing_unit import MediaProcessingUnit
 
 
@@ -23,6 +24,42 @@ def resolve_media_info(processed: ProcessedMedia, file_path: str) -> tuple[int, 
         info = MediaInfoReader.read(file_path)
         return info.width, info.height, info.duration
     return processed.source.width, processed.source.height, getattr(processed.source, "duration", 0)
+
+
+async def create_video_thumbnail(file_path: str | Path, duration: int = 0) -> Path | None:
+    """从已下载的视频截取 Telegram 可内嵌的 JPEG thumbnail。"""
+    source = Path(file_path)
+    output = source.parent / f".{source.stem}_inline_thumb_{time.time_ns()}.jpg"
+    timestamp = min(max(duration * 0.03, 0.1), max(duration - 0.1, 0.1), 10.0) if duration else 1.0
+
+    try:
+        for quality in (4, 10):
+            await run_cmd(
+                "ffmpeg",
+                "-v",
+                "error",
+                "-ss",
+                f"{timestamp:.3f}",
+                "-i",
+                str(source),
+                "-frames:v",
+                "1",
+                "-vf",
+                "scale=320:320:force_original_aspect_ratio=decrease",
+                "-q:v",
+                str(quality),
+                "-y",
+                str(output),
+                timeout=60,
+            )
+            if output.is_file() and 0 < output.stat().st_size <= 200 * 1024:
+                logger.debug(f"内联视频 thumbnail 已生成: path={output}, timestamp={timestamp:.3f}s")
+                return output
+    except Exception as e:
+        logger.warning(f"内联视频 thumbnail 生成失败: {type(e).__name__}: {e}")
+
+    output.unlink(missing_ok=True)
+    return None
 
 
 def progress(current: int, total: int, unit: ProgressUnit, _t: PreLocaleSelector) -> str | None:

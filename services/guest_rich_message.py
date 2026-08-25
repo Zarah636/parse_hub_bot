@@ -36,6 +36,7 @@ class RichMessageUnsupported(ValueError):
 class RichMediaSource:
     kind: RichMediaKind
     path: Path | None = None
+    thumbnail_path: Path | None = None
     file_id: str | None = None
     width: int = 0
     height: int = 0
@@ -155,7 +156,7 @@ async def build_pipeline_rich_message(
     hide_source: bool = False,
 ) -> RichMessageBuild:
     sources = media_sources_from_pipeline(result)
-    prepared = [await _prepare_media(cli, item) for item in _validate_media(sources)]
+    prepared = [await prepare_rich_media(cli, item) for item in _validate_media(sources)]
     return assemble_rich_message(
         title=result.parse_result.title,
         content=result.parse_result.content,
@@ -321,7 +322,8 @@ def _validate_media(media: list[RichMediaSource]) -> list[RichMediaSource]:
     return media
 
 
-async def _prepare_media(cli: Client, item: RichMediaSource) -> PreparedRichMedia:
+async def prepare_rich_media(cli: Client, item: RichMediaSource) -> PreparedRichMedia:
+    """上传本地媒体并返回可复用的 Telegram 媒体引用。"""
     if item.path is None:
         raise ValueError("local rich media is missing a path")
     if item.kind == RichMediaKind.PHOTO:
@@ -372,15 +374,21 @@ async def _prepare_media(cli: Client, item: RichMediaSource) -> PreparedRichMedi
     if item.kind == RichMediaKind.ANIMATION:
         attributes.append(raw.types.DocumentAttributeAnimated())
     mime_type = mimetypes.guess_type(item.path.name)[0] or "video/mp4"
+    thumbnail = (
+        cast(raw.base.InputFile, await cli.save_file(str(item.thumbnail_path))) if item.thumbnail_path else None
+    )
+    input_media = raw.types.InputMediaUploadedDocument(
+        file=await cli.save_file(str(item.path)),
+        mime_type=mime_type,
+        attributes=attributes,
+        nosound_video=True if item.kind == RichMediaKind.ANIMATION else None,
+    )
+    if thumbnail is not None:
+        input_media.thumb = thumbnail
     uploaded = await cli.invoke(
         raw.functions.messages.UploadMedia(
             peer=raw.types.InputPeerSelf(),
-            media=raw.types.InputMediaUploadedDocument(
-                file=await cli.save_file(str(item.path)),
-                mime_type=mime_type,
-                attributes=attributes,
-                nosound_video=True if item.kind == RichMediaKind.ANIMATION else None,
-            ),
+            media=input_media,
         )
     )
     if not isinstance(uploaded, raw.types.MessageMediaDocument) or not isinstance(
@@ -401,7 +409,15 @@ async def _prepare_media(cli: Client, item: RichMediaSource) -> PreparedRichMedi
         access_hash=uploaded.document.access_hash,
         file_reference=uploaded.document.file_reference,
     ).encode()
-    return PreparedRichMedia(item.kind, document, CacheMedia(type=cache_type, file_id=file_id))
+    return PreparedRichMedia(
+        item.kind,
+        document,
+        CacheMedia(type=cache_type, file_id=file_id, has_thumbnail=thumbnail is not None),
+    )
+
+
+# 保留旧的内部名称，避免已有调用方在公共上传函数更名后失效。
+_prepare_media = prepare_rich_media
 
 
 def _prepare_cached_media(item: RichMediaSource) -> PreparedRichMedia:

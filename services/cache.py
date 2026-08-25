@@ -110,6 +110,7 @@ class CacheMedia(BaseModel):
     type: CacheMediaType
     file_id: str
     cover_file_id: str | None = None
+    has_thumbnail: bool = False
 
 
 class CacheEntry(BaseModel):

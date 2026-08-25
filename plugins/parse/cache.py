@@ -12,6 +12,7 @@ def cache_media_from_message(m: Message) -> CacheMedia | None:
             type=CacheMediaType.VIDEO,
             file_id=m.video.file_id,
             cover_file_id=m.video.video_cover.file_id if m.video.video_cover else None,
+            has_thumbnail=bool(getattr(m.video, "thumbs", None)),
         )
     if m.animation:
         return CacheMedia(type=CacheMediaType.ANIMATION, file_id=m.animation.file_id)

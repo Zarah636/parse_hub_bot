@@ -22,6 +22,7 @@ class ParseCacheVideoCoverTests(unittest.TestCase):
                 video=SimpleNamespace(
                     file_id="video-file-id",
                     video_cover=SimpleNamespace(file_id="cover-file-id"),
+                    thumbs=[SimpleNamespace(file_id="thumbnail-file-id")],
                 ),
                 animation=None,
                 document=None,
@@ -33,6 +34,7 @@ class ParseCacheVideoCoverTests(unittest.TestCase):
         assert cached is not None
         self.assertEqual(cached.file_id, "video-file-id")
         self.assertEqual(cached.cover_file_id, "cover-file-id")
+        self.assertTrue(cached.has_thumbnail)
 
     def test_cached_video_cover_follows_current_setting(self) -> None:
         cached = CacheMedia(

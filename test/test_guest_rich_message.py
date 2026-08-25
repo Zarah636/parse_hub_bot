@@ -308,7 +308,9 @@ class GuestRichMessageUploadTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_uploaded_video_produces_reusable_cache_file_id(self) -> None:
         cli = MagicMock()
-        cli.save_file = AsyncMock(return_value=MagicMock())
+        uploaded_thumbnail = MagicMock()
+        uploaded_video = MagicMock()
+        cli.save_file = AsyncMock(side_effect=[uploaded_thumbnail, uploaded_video])
         uploaded_document = raw.types.Document(
             id=303,
             access_hash=404,
@@ -326,6 +328,7 @@ class GuestRichMessageUploadTests(unittest.IsolatedAsyncioTestCase):
             RichMediaSource(
                 RichMediaKind.VIDEO,
                 path=Path("video.mp4"),
+                thumbnail_path=Path("thumbnail.jpg"),
                 width=1920,
                 height=1080,
                 duration=10,
@@ -334,6 +337,9 @@ class GuestRichMessageUploadTests(unittest.IsolatedAsyncioTestCase):
 
         assert prepared.cache_media is not None
         self.assertEqual(prepared.cache_media.type, CacheMediaType.VIDEO)
+        self.assertTrue(prepared.cache_media.has_thumbnail)
+        upload_request = cli.invoke.await_args.args[0]
+        self.assertIs(upload_request.media.thumb, uploaded_thumbnail)
         cached = utils.get_input_media_from_file_id(prepared.cache_media.file_id, FileType.VIDEO)
         self.assertIsInstance(cached, raw.types.InputMediaDocument)
 
