@@ -63,6 +63,7 @@
 | **小黑盒**      |  ✅  |  ✅  |                     |
 | **Snapchat**    |  ✅  |      |                     |
 | **知乎**        |  ✅  |  ✅  | 🐶 问答, 专栏, 圈子 |
+| **豆瓣**        |  ✅  |  ✅  |     👥 小组话题     |
 
 > 🔧 更多平台持续接入中...
 
@@ -142,6 +143,7 @@ docker exec -it parse-hub-bot python tools/flyinglife_auth.py --reauth
 # ═══════════════════════ 全局默认代理 ═══════════════════════
 # 当某平台未单独配置代理时，会使用全局默认代理
 # 支持填写单个地址(字符串)或多个地址(列表，随机选取)
+# 支持 http://、https://、socks5://、socks5h:// 协议
 
 default_parser_proxies: http://127.0.0.1:7890        # 解析代理（单个）
 default_downloader_proxies: # 下载代理（代理池）
@@ -203,6 +205,7 @@ platforms:
 | `xiaoheihe` | 小黑盒      |
 | `snapchat`  | Snapchat    |
 | `zhihu`     | 知乎        |
+| `douban`    | 豆瓣        |
 
 ### 🍪 支持 Cookie 的平台
 
@@ -216,6 +219,7 @@ platforms:
 - `快手`
 - `小红书`
 - `知乎`
+- `豆瓣`
 
 ### 📌 配置示例
 
