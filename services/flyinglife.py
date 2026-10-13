@@ -307,7 +307,9 @@ class FlyingLifeService:
         *,
         proxy_media: bool,
     ) -> AnyParseResult:
-        if payload.music_list:
+        # The web API also returns background music alongside videos/photos.
+        # It is an optional companion resource, not an audio-only result.
+        if payload.music_list and not payload.video_list and not payload.images:
             raise FlyingLifeParseError("第一版暂不支持音频结果")
 
         def media_url(value: str, media_type: str) -> str:

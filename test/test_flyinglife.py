@@ -199,6 +199,41 @@ class FlyingLifeParseTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(FlyingLifeParseError, "暂不支持音频"):
             await service.parse("https://example.com/post", "https://example.com/post")
 
+    async def test_video_and_gallery_accept_background_music(self) -> None:
+        for payload, expected_type in (
+            (
+                {
+                    "images": ["https://example.com/cover.jpg"],
+                    "videos": ["https://example.com/video.mp4"],
+                    "musics": ["https://example.com/background.mp3"],
+                },
+                VideoParseResult,
+            ),
+            (
+                {
+                    "images": ["https://example.com/1.jpg", "https://example.com/2.jpg"],
+                    "music": "https://example.com/background.mp3",
+                },
+                ImageParseResult,
+            ),
+            (
+                {
+                    "images": ["https://example.com/cover.jpg", "https://example.com/photo.jpg"],
+                    "video": "https://example.com/video.mp4",
+                    "musics": ["https://example.com/background.mp3"],
+                },
+                MultimediaParseResult,
+            ),
+        ):
+            with self.subTest(expected_type=expected_type.__name__):
+                service = FlyingLifeService()
+                service._api_request = AsyncMock(return_value=payload)  # type: ignore[method-assign]
+                candidate = await service.parse_inline_candidate(
+                    "https://v.douyin.com/example/", "https://www.douyin.com/video/1"
+                )
+                self.assertIsInstance(candidate.preview_result, expected_type)
+                self.assertIsInstance(candidate.download_result, expected_type)
+
     async def test_null_music_collection_is_normalized(self) -> None:
         service = FlyingLifeService()
         service._api_request = AsyncMock(  # type: ignore[method-assign]
