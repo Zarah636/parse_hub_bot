@@ -82,6 +82,12 @@ class TTLCache:
             self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
             self.logger.debug(f"后台清理任务已启动, interval={self._cleanup_interval}s")
 
+    async def stop_cleanup(self) -> None:
+        if self._cleanup_task is not None:
+            self._cleanup_task.cancel()
+            await asyncio.gather(self._cleanup_task, return_exceptions=True)
+            self._cleanup_task = None
+
     async def _periodic_cleanup(self) -> None:
         while True:
             await asyncio.sleep(self._cleanup_interval)
@@ -118,6 +124,9 @@ class CacheEntry(BaseModel):
     media: list[CacheMedia] | None = None
     telegraph_url: str | None = None
     rich: bool = False
+    # 来自 ImageParseResult/MultimediaParseResult 的条目, 允许走富文本幻灯片缓存发送
+    rich_media: bool = False
+    complete: bool = True
 
 
 class PersistentCache:
@@ -162,11 +171,13 @@ class PersistentCache:
                 return None
 
             await repo.touch(cache, self._now())
+            if not entry.complete:
+                return None
             self.logger.debug(f"缓存命中: key={url}")
             return entry
 
     async def set(self, url: str, entry: CacheEntry) -> None:
-        if self._disable:
+        if self._disable or not entry.complete:
             return
 
         key = self._make_key(url)

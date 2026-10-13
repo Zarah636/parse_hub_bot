@@ -8,12 +8,14 @@ from .cache import (
     persistent_cache,
 )
 from .chat import ChatService
+from .cookie_health import CookieAlert, CookieStat, cookie_health
 from .flyinglife import FlyingLifeInlineCandidate, FlyingLifeService, flyinglife
 from .flyinglife_runtime import FlyingLifeRuntime, flyinglife_runtime
 from .forum_topic import ForumTopicService
 from .hybrid import HybridParsePipeline
 from .parser import ParseService
 from .pipeline import ParsePipeline, PipelineProgressCallback, PipelineResult, StatusReporter
+from .platform_config import platform_config_service
 from .settings import (
     AnySettingsTarget,
     ChannelSettingsTarget,
@@ -58,4 +60,8 @@ __all__ = [
     "PipelineResult",
     "PipelineProgressCallback",
     "StatusReporter",
+    "cookie_health",
+    "CookieAlert",
+    "CookieStat",
+    "platform_config_service",
 ]

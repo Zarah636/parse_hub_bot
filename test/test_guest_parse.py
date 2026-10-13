@@ -18,13 +18,13 @@ from pyrogram.types import (  # noqa: E402
     Message,
 )
 
-from plugins.guest_parse import (  # noqa: E402
+from plugins.helpers import COMMANDS, build_caption_by_str, build_start_text  # noqa: E402
+from plugins.parse.guest import (  # noqa: E402
     answer_guest_progress,
     edit_guest_result,
     extract_guest_url,
     guest_parse,
 )
-from plugins.helpers import COMMANDS, build_caption_by_str, build_start_text  # noqa: E402
 from repo.settings import SettingsConfig  # noqa: E402
 from services import CacheEntry, CacheMedia, CacheMediaType, CacheParseResult  # noqa: E402
 from services.guest_rich_message import RichLayout, RichMessageBuild  # noqa: E402
@@ -78,7 +78,7 @@ class GuestParseTests(unittest.TestCase):
             ),
         )
 
-        with patch("plugins.guest_parse.ParseService", return_value=service):
+        with patch("plugins.parse.guest.ParseService", return_value=service):
             self.assertEqual(extract_guest_url(message), "https://example.com/post")
 
     def test_no_reply_produces_no_url(self) -> None:
@@ -97,13 +97,13 @@ class GuestParseTests(unittest.TestCase):
             ),
         )
 
-        with patch("plugins.guest_parse.ParseService", return_value=service):
+        with patch("plugins.parse.guest.ParseService", return_value=service):
             self.assertEqual(extract_guest_url(message), "https://example.com/post")
 
     def test_flyinglife_command_is_in_menu_and_help(self) -> None:
         self.assertIn("flyinglife", COMMANDS)
         self.assertIn("/flyinglife", build_start_text()["zh-hans"])
-        self.assertIn("Send share link", build_start_text()["en-us"])
+        self.assertIn("Send sharing link", build_start_text()["en-us"])
         self.assertIn("/flyinglife", build_start_text()["en-us"])
 
     def test_caption_omits_semantically_duplicate_title(self) -> None:
@@ -190,16 +190,16 @@ class GuestParseAsyncTests(unittest.IsolatedAsyncioTestCase):
         parse_service.parser.get_platform.side_effect = lambda item: object() if item.startswith("https://") else None
 
         with (
-            patch("plugins.guest_parse.get_session", return_value=FakeSessionContext()),
-            patch("plugins.guest_parse.UserService", return_value=user_service),
-            patch("plugins.guest_parse.SettingsService", return_value=settings_service),
-            patch("plugins.guest_parse.ParseService", return_value=parse_service),
+            patch("plugins.parse.guest.get_session", return_value=FakeSessionContext()),
+            patch("plugins.parse.guest.UserService", return_value=user_service),
+            patch("plugins.parse.guest.SettingsService", return_value=settings_service),
+            patch("plugins.parse.guest.ParseService", return_value=parse_service),
             patch(
-                "plugins.guest_parse.parse_rate_limiter.check",
+                "plugins.parse.guest.parse_rate_limiter.check",
                 AsyncMock(side_effect=ParseRateLimitExceeded(12.3)),
             ),
-            patch("plugins.guest_parse.HybridParsePipeline") as pipeline,
-            patch("plugins.guest_parse.t_", {"test": lambda text: text}),
+            patch("plugins.parse.guest.HybridParsePipeline") as pipeline,
+            patch("plugins.parse.guest.t_", {"test": lambda text: text}),
         ):
             await guest_parse(cli, message)
 
@@ -219,7 +219,7 @@ class GuestParseAsyncTests(unittest.IsolatedAsyncioTestCase):
             cache_media=[CacheMedia(type=CacheMediaType.VIDEO, file_id="video-file-id")],
         )
 
-        with patch("plugins.guest_parse.edit_inline_rich_message", AsyncMock()) as edit_rich:
+        with patch("plugins.parse.guest.edit_inline_rich_message", AsyncMock()) as edit_rich:
             delivery = await edit_guest_result(
                 cli,
                 "inline-id",
@@ -244,7 +244,7 @@ class GuestParseAsyncTests(unittest.IsolatedAsyncioTestCase):
             cache_media=[CacheMedia(type=CacheMediaType.PHOTO, file_id="photo-file-id")],
         )
 
-        with patch("plugins.guest_parse.edit_inline_rich_message", AsyncMock()) as edit_rich:
+        with patch("plugins.parse.guest.edit_inline_rich_message", AsyncMock()) as edit_rich:
             delivery = await edit_guest_result(
                 cli,
                 "inline-id",
@@ -270,7 +270,7 @@ class GuestParseAsyncTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
-        with patch("plugins.guest_parse.edit_inline_rich_message", AsyncMock(return_value=True)) as edit_rich:
+        with patch("plugins.parse.guest.edit_inline_rich_message", AsyncMock(return_value=True)) as edit_rich:
             delivery = await edit_guest_result(
                 cli,
                 "inline-id",
@@ -299,7 +299,7 @@ class GuestParseAsyncTests(unittest.IsolatedAsyncioTestCase):
             rpc_name="messages.EditInlineBotMessage",
         )
 
-        with patch("plugins.guest_parse.edit_inline_rich_message", AsyncMock(side_effect=error)):
+        with patch("plugins.parse.guest.edit_inline_rich_message", AsyncMock(side_effect=error)):
             delivery = await edit_guest_result(
                 cli,
                 "inline-id",
@@ -320,7 +320,7 @@ class GuestParseAsyncTests(unittest.IsolatedAsyncioTestCase):
         cli = MagicMock()
         rich = mixed_rich_build()
 
-        with patch("plugins.guest_parse.edit_inline_rich_message", AsyncMock(return_value=True)) as edit_rich:
+        with patch("plugins.parse.guest.edit_inline_rich_message", AsyncMock(return_value=True)) as edit_rich:
             delivery = await edit_guest_result(
                 cli,
                 "inline-id",
@@ -341,9 +341,7 @@ class GuestParseAsyncTests(unittest.IsolatedAsyncioTestCase):
             rpc_name="messages.EditInlineBotMessage",
         )
 
-        with patch(
-            "plugins.guest_parse.edit_inline_rich_message", AsyncMock(side_effect=[error, True])
-        ) as edit_rich:
+        with patch("plugins.parse.guest.edit_inline_rich_message", AsyncMock(side_effect=[error, True])) as edit_rich:
             delivery = await edit_guest_result(
                 cli,
                 "inline-id",
@@ -370,9 +368,7 @@ class GuestParseAsyncTests(unittest.IsolatedAsyncioTestCase):
             rpc_name="messages.EditInlineBotMessage",
         )
 
-        with patch(
-            "plugins.guest_parse.edit_inline_rich_message", AsyncMock(side_effect=[error, error])
-        ) as edit_rich:
+        with patch("plugins.parse.guest.edit_inline_rich_message", AsyncMock(side_effect=[error, error])) as edit_rich:
             delivery = await edit_guest_result(
                 cli,
                 "inline-id",
@@ -418,14 +414,14 @@ class GuestParseAsyncTests(unittest.IsolatedAsyncioTestCase):
         edit_rich = AsyncMock(return_value=True)
 
         with (
-            patch("plugins.guest_parse.get_session", return_value=FakeSessionContext()),
-            patch("plugins.guest_parse.UserService", return_value=user_service),
-            patch("plugins.guest_parse.SettingsService", return_value=settings_service),
-            patch("plugins.guest_parse.ParseService", return_value=parse_service),
-            patch("plugins.guest_parse.flyinglife.should_attempt", return_value=use_flyinglife),
-            patch("plugins.guest_parse.persistent_cache.get", AsyncMock(return_value=cached)) as cache_get,
-            patch("plugins.guest_parse.edit_inline_rich_message", edit_rich),
-            patch("plugins.guest_parse.t_", {"test": lambda text: text}),
+            patch("plugins.parse.guest.get_session", return_value=FakeSessionContext()),
+            patch("plugins.parse.guest.UserService", return_value=user_service),
+            patch("plugins.parse.guest.SettingsService", return_value=settings_service),
+            patch("plugins.parse.guest.ParseService", return_value=parse_service),
+            patch("plugins.parse.guest.flyinglife.should_attempt", return_value=use_flyinglife),
+            patch("plugins.parse.guest.persistent_cache.get", AsyncMock(return_value=cached)) as cache_get,
+            patch("plugins.parse.guest.edit_inline_rich_message", edit_rich),
+            patch("plugins.parse.guest.t_", {"test": lambda text: text}),
         ):
             await guest_parse(cli, message)
 
@@ -476,21 +472,21 @@ class GuestParseAsyncTests(unittest.IsolatedAsyncioTestCase):
         rich = SimpleNamespace(message=object(), layout="single", media_count=1, cache_media=cache_media)
 
         with (
-            patch("plugins.guest_parse.get_session", return_value=FakeSessionContext()),
-            patch("plugins.guest_parse.UserService", return_value=user_service),
-            patch("plugins.guest_parse.SettingsService", return_value=settings_service),
-            patch("plugins.guest_parse.ParseService", return_value=parse_service),
-            patch("plugins.guest_parse.flyinglife.should_attempt", return_value=True),
-            patch("plugins.guest_parse.persistent_cache.get", AsyncMock(return_value=None)),
-            patch("plugins.guest_parse.persistent_cache.set", AsyncMock()) as cache_set,
-            patch("plugins.guest_parse.parse_cache.get", AsyncMock(return_value=None)),
-            patch("plugins.guest_parse.HybridParsePipeline", return_value=pipeline) as pipeline_cls,
-            patch("plugins.guest_parse.build_pipeline_rich_message", AsyncMock(return_value=rich)),
-            patch("plugins.guest_parse.edit_inline_rich_message", AsyncMock(return_value=True)) as edit_result_rich,
+            patch("plugins.parse.guest.get_session", return_value=FakeSessionContext()),
+            patch("plugins.parse.guest.UserService", return_value=user_service),
+            patch("plugins.parse.guest.SettingsService", return_value=settings_service),
+            patch("plugins.parse.guest.ParseService", return_value=parse_service),
+            patch("plugins.parse.guest.flyinglife.should_attempt", return_value=True),
+            patch("plugins.parse.guest.persistent_cache.get", AsyncMock(return_value=None)),
+            patch("plugins.parse.guest.persistent_cache.set", AsyncMock()) as cache_set,
+            patch("plugins.parse.guest.parse_cache.get", AsyncMock(return_value=None)),
+            patch("plugins.parse.guest.HybridParsePipeline", return_value=pipeline) as pipeline_cls,
+            patch("plugins.parse.guest.build_pipeline_rich_message", AsyncMock(return_value=rich)),
+            patch("plugins.parse.guest.edit_inline_rich_message", AsyncMock(return_value=True)) as edit_result_rich,
             patch(
                 "plugins.parse.reporters.edit_inline_rich_message", AsyncMock(return_value=True)
             ) as edit_progress_rich,
-            patch("plugins.guest_parse.t_", {"test": lambda text: text}),
+            patch("plugins.parse.guest.t_", {"test": lambda text: text}),
         ):
             await guest_parse(cli, message)
 

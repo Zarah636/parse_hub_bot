@@ -1,19 +1,24 @@
 import asyncio
 import shutil
+from functools import partial
 from typing import Any
 
 import pillow_heif
 from pyrogram import Client
+from pyrogram.errors import RPCError
 from pyrogram.handlers import ConnectHandler, DisconnectHandler
-from pyrogram.types import BotCommand
+from pyrogram.types import BotCommand, BotCommandScopeChat
 
 from core import bs, on_connect, on_disconnect, ws
 from db.engine import close_db
 from db.init import init_db
 from i18n import ISO639_MAP
 from log import logger, setup_logging
-from plugins.helpers import COMMANDS
-from services import flyinglife, inline_flyinglife_cache, parse_cache
+from plugins.admin.alert import send_cookie_alert
+from plugins.helpers import ADMIN_COMMANDS, COMMANDS
+from services import cookie_health, flyinglife, inline_flyinglife_cache, parse_cache
+from services.tasks import shutdown as shutdown_parse_tasks
+from services.tasks import start as start_parse_tasks
 from utils.event_loop import setup_optimized_event_loop
 
 pillow_heif.register_heif_opener()
@@ -42,6 +47,7 @@ class Bot(Client):
         )
 
     async def start(self, *args: Any, **kwargs: Any) -> "Bot":
+        start_parse_tasks()
         self.init_watchdog()
 
         logger.info("初始化数据库...")
@@ -51,18 +57,25 @@ class Bot(Client):
         await flyinglife.initialize()
         parse_cache.start_cleanup()
         inline_flyinglife_cache.start_cleanup()
+        cookie_health.set_notifier(partial(send_cookie_alert, self))
         await super().start(*args, **kwargs)
         await self.set_menu()
+        await self.set_admin_menu()
         return self
 
-    async def stop(self, *args: Any, **kwargs: Any) -> None:
+    async def stop(self, *args: Any, **kwargs: Any) -> Client:
         ws.exit_flag = True
+        await shutdown_parse_tasks()
+        await parse_cache.stop_cleanup()
+        await inline_flyinglife_cache.stop_cleanup()
+        await cookie_health.close()
         await super().stop(*args, **kwargs)
         await flyinglife.close()
         await close_db()
         # 结束时清理下载残留
         if self.cfg.download_dir.exists() and not self.cfg.debug_skip_cleanup:
             shutil.rmtree(self.cfg.download_dir)
+        return self
 
     def init_watchdog(self) -> None:
         self.add_handler(ConnectHandler(on_connect))
@@ -82,6 +95,22 @@ class Bot(Client):
             )
             logger.debug(f"{iso639 or '默认'} 菜单已设置: {tc}")
             await asyncio.sleep(0.5)
+
+    async def set_admin_menu(self) -> None:
+        """管理员的命令菜单额外带上管理命令"""
+        lang = self.cfg.language
+        commands = [BotCommand(command=k, description=v[lang]) for k, v in {**COMMANDS, **ADMIN_COMMANDS}.items()]
+        expected = [(c.command, c.description) for c in commands]
+        for uid in self.cfg.admin_ids:
+            scope = BotCommandScopeChat(chat_id=uid)
+            try:
+                current = await self.get_bot_commands(scope=scope)
+                if [(c.command, c.description) for c in current] == expected:
+                    continue
+                await self.set_bot_commands(commands, scope=scope)
+                logger.debug(f"管理员 {uid} 菜单已设置")
+            except RPCError as e:
+                logger.warning(f"设置管理员 {uid} 菜单失败: {e}")
 
 
 if __name__ == "__main__":

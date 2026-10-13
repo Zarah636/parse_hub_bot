@@ -1,10 +1,13 @@
+import io
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
+import httpx
 from easy_ai18n import PreLocaleSelector
 from parsehub.types import AnyMediaFile, DownloadResult, ProgressUnit
 from parsehub.utils.media_info import MediaInfoReader
+from PIL import Image
 
 from log import logger
 from utils.helpers import run_cmd, to_list
@@ -16,6 +19,37 @@ class ProcessedMedia:
     source: AnyMediaFile
     output_paths: list[Path] | None = None
     output_dir: Path | None = None
+
+
+def make_thumb(src: bytes | str | Path, out_path: str | Path) -> str | None:
+    """压到 TG thumb 规格(≤320px JPEG), 失败返回 None"""
+    try:
+        with Image.open(io.BytesIO(src) if isinstance(src, bytes) else src) as original:
+            img = original.convert("RGB")
+        img.thumbnail((320, 320))
+        for quality in (85, 65, 40):
+            img.save(out_path, "JPEG", quality=quality)
+            if Path(out_path).stat().st_size <= 200 * 1024:
+                return str(out_path)
+        Path(out_path).unlink(missing_ok=True)
+        return None
+    except Exception as e:
+        logger.debug(f"缩略图处理失败: {e}")
+        return None
+
+
+async def fetch_thumb(url: str, out_path: str | Path) -> str | None:
+    """下载缩略图并压到 TG thumb 规格, 失败返回 None"""
+    try:
+        if not url.startswith(("https://", "http://")):
+            return make_thumb(url, out_path)
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+        return make_thumb(resp.content, out_path)
+    except Exception as e:
+        logger.warning(f"缩略图获取失败, 跳过({url}): {e}")
+        return None
 
 
 def resolve_media_info(processed: ProcessedMedia, file_path: str) -> tuple[int, int, int]:
@@ -60,6 +94,17 @@ async def create_video_thumbnail(file_path: str | Path, duration: int = 0) -> Pa
 
     output.unlink(missing_ok=True)
     return None
+
+
+async def prepare_video_thumbnail(file_path: str | Path, duration: int = 0, *, cover: str | None = None) -> Path | None:
+    """Prefer the configured cover; always try an embedded frame thumbnail."""
+    if cover:
+        source = Path(file_path)
+        output = source.parent / f".{source.stem}_cover_thumb_{time.time_ns()}.jpg"
+        thumb = await fetch_thumb(cover, output)
+        if thumb:
+            return Path(thumb)
+    return await create_video_thumbnail(file_path, duration)
 
 
 def progress(current: int, total: int, unit: ProgressUnit, _t: PreLocaleSelector) -> str | None:

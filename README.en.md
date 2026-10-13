@@ -33,37 +33,46 @@
 
 ## ✨ Features
 
-- 🎬 **Multi-platform parsing** — Parse content from 16+ major platforms, including Douyin, Bilibili, YouTube,
+- 🎬 **Multi-platform parsing** — Parse content from 20+ major platforms, including Douyin, Bilibili, YouTube,
   Xiaohongshu, and Twitter
 - ⚡ **Inline mode** — Parse a link from any chat by typing `@BotUsername <link>`
+- 👥 **Guest mode** — Mention `@BotUsername` in any chat to parse, no need to add the bot first
 - 🖼️ **Telegram-ready media** — Automatic transcoding, long-image splitting, and large-video segmentation
 - 📦 **Multiple delivery modes** — Online preview, original file, or packaged download
 - 🐳 **Docker deployment** — Ready to use out of the box
 
+This customized branch retains FlyingLife priority parsing across ordinary, inline, and guest requests while integrating upstream v2.2.0. `/flyinglife` changes the global engine preference and requires an ID listed in `ADMIN_IDS`. `/admin` manages upstream platform proxies and cookies.
+
+Before upgrading, stop the old container and back up `.env`, the previous image, and the entire `data/` directory. Startup merges the private and upstream database heads into `ae26d014c220`; rollback requires the pre-upgrade data backup as well as the old image. Rebuild from this branch and its lock file to include the custom features. `PARSE_CONCURRENCY` defaults to `2` across download, conversion, and upload tasks; start with `1` on an R5S. `PARSE_SHUTDOWN_TIMEOUT` defaults to `30` seconds before remaining tasks are cancelled. See the [Chinese upgrade guide](README.md#增强版升级至上游-v220) for cache, guest layout, and rollout details.
+
 ## 📦 Supported Platforms
 
-| Platform        | Video | Image Posts |          Other           |
-|:----------------|:-----:|:-----------:|:------------------------:|
-| **Twitter / X** |  ✅   |     ✅      |       📝 Articles        |
-| **Instagram**   |  ✅   |     ✅      |                          |
-| **YouTube**     |  ✅   |             |         🎵 Music         |
-| **Facebook**    |  ✅   |             |                          |
-| **Threads**     |  ✅   |     ✅      |                          |
-| **Bilibili**    |  ✅   |             |        📝 Updates        |
-| **Douyin**      |  ✅   |     ✅      |      ☀️ Daily posts      |
-| **TikTok**      |  ✅   |     ✅      |                          |
-| **Weibo**       |  ✅   |     ✅      |                          |
-| **Xiaohongshu** |  ✅   |     ✅      |                          |
-| **Tieba**       |  ✅   |     ✅      |                          |
-| **WeChat OA**   |       |     ✅      |                          |
-| **Kuaishou**    |  ✅   |     ✅      |                          |
-| **Coolapk**     |       |     ✅      |                          |
-| **Pipixia**     |  ✅   |     ✅      |                          |
-| **Zuiyou**      |  ✅   |     ✅      |                          |
-| **Xiaoheihe**   |  ✅   |     ✅      |                          |
-| **Snapchat**    |  ✅   |             |                          |
-| **Zhihu**       |  ✅   |     ✅      | 🐶 Q&A, columns, circles |
-| **Douban**      |  ✅   |     ✅      |     👥 Group topics      |
+| Platform            | Video | Image Posts |                    Other                    |
+|:--------------------|:-----:|:-----------:|:-------------------------------------------:|
+| **Twitter / X**     |  ✅   |     ✅      |                 📝 Articles                 |
+| **Instagram**       |  ✅   |     ✅      |                                             |
+| **YouTube**         |  ✅   |             |                  🎵 Music                   |
+| **Facebook**        |  ✅   |             |                                             |
+| **Threads**         |  ✅   |     ✅      |                                             |
+| **Bilibili**        |  ✅   |             |                 📝 Updates                  |
+| **Douyin**          |  ✅   |     ✅      |               ☀️ Daily posts                |
+| **TikTok**          |  ✅   |     ✅      |                                             |
+| **Weibo**           |  ✅   |     ✅      |                                             |
+| **Xiaohongshu**     |  ✅   |     ✅      |                                             |
+| **Tieba**           |  ✅   |     ✅      |                                             |
+| **WeChat OA**       |       |     ✅      |                                             |
+| **WeChat Channels** |  ✅   |             |                                             |
+| **Kuaishou**        |  ✅   |     ✅      |                                             |
+| **Coolapk**         |       |     ✅      |                                             |
+| **Pipixia**         |  ✅   |     ✅      |                                             |
+| **Zuiyou**          |  ✅   |     ✅      |                                             |
+| **Xiaoheihe**       |  ✅   |     ✅      |                                             |
+| **Snapchat**        |  ✅   |             |                                             |
+| **Zhihu**           |  ✅   |     ✅      |       🐶 Q&A, columns, circles, Daily       |
+| **Douban**          |  ✅   |     ✅      |               👥 Group topics               |
+| **Bangumi**         |       |     ✅      | 💬 Subject discussions, blogs, group topics |
+| **Toutiao**         |  ✅   |     ✅      |        📰 Articles, Weitoutiao posts        |
+| **Medium**          |  ✅   |     ✅      |                 📰 Articles                 |
 
 > 🔧 More platforms are being added continuously...
 
@@ -79,6 +88,7 @@ docker run -d \
   -e API_ID=YOUR_API_ID \
   -e API_HASH=YOUR_API_HASH \
   -e BOT_TOKEN=YOUR_BOT_TOKEN \
+  -e ADMIN_IDS=YOUR_TG_USER_ID \
   -v ./logs:/app/logs \
   -v ./data:/app/data \
   --name parse-hub-bot \
@@ -109,11 +119,60 @@ BOT_TOKEN=     # Bot token; create one via @BotFather
 
 # 🔲 Optional
 BOT_PROXY=     # Proxy for the bot's Telegram connection, e.g. http://127.0.0.1:7890
+ADMIN_IDS=     # Telegram user IDs of admins, comma-separated, e.g. 123456789,987654321
+               # Admins can use /admin in private chat to manage platform config and receive cookie failure alerts
 ```
 
 ### 🌐 Platform Configuration
 
-Configure **proxies** and **cookies** for each parser platform in `data/config/platform_config.yaml`.
+Configure **proxies** and **cookies** for each parser platform. Managing them online with `/admin` is recommended — changes take effect immediately, no restart required.
+
+#### 🛠️ Online Management
+
+1. Set `ADMIN_IDS` in `.env`
+2. Send `/admin` to the bot in a private chat to open the config panel
+
+- **Global default proxies** — Set the default parser / downloader proxy pools
+- **Platform config** — Choose a proxy mode per platform (global / dedicated / direct) and manage dedicated proxy pools and cookies
+- **One-click testing** — Test proxy connectivity; send a link to parse it with each selected cookie and check whether it works
+- **Failure alerts** — Admins are notified when a cookie fails to parse 3 times in a row, with shortcuts to replace it and retry the original link
+- **Import / Export** — Export a full config backup, or import a file / YAML to replace the whole config; after editing the file manually, tap "Reload Configuration" to apply it
+
+### 🔀 Proxy Priority
+
+Parser and downloader proxies each use the same priority order:
+
+```
+Disable proxy (disable_*_proxy: true)
+  ↓ if not disabled
+Platform-specific proxy (parser_proxies / downloader_proxies)
+  ↓ if not configured
+Global default proxy (default_parser_proxies / default_downloader_proxies)
+  ↓ if not configured
+Direct connection (no proxy)
+```
+
+> 💡 When a proxy pool contains multiple addresses, one is **selected at random** for every request.
+
+### 🍪 Platforms Supporting Cookies
+
+- `Twitter / X`
+- `Instagram`
+- `Threads`
+- `YouTube`
+- `Bilibili`
+- `Douyin`
+- `TikTok`
+- `Kuaishou`
+- `Xiaohongshu`
+- `Zhihu`
+- `Douban`
+- `WeChat Channels` (requires the Cookie from Tencent Yuanbao yuanbao.tencent.com after logging in)
+
+<details>
+<summary>📄 Edit the config file manually</summary>
+
+The config file is located at `data/config/platform_config.yaml` and can also be edited directly. After editing, tap "Reload Configuration" in `/admin` or restart the bot to apply the changes.
 
 ```yaml
 # ═══════════════════════ Global default proxies ═══════════════════════
@@ -140,64 +199,26 @@ platforms:
       - "cookie_string_2"
 ```
 
-### 🔀 Proxy Priority
-
-Parser and downloader proxies each use the same priority order:
-
-```
-Disable proxy (disable_*_proxy: true)
-  ↓ if not disabled
-Platform-specific proxy (parser_proxies / downloader_proxies)
-  ↓ if not configured
-Global default proxy (default_parser_proxies / default_downloader_proxies)
-  ↓ if not configured
-Direct connection (no proxy)
-```
-
-> 💡 When a proxy pool contains multiple addresses, one is **selected at random** for every request.
-
-### 🔑 Supported Platform IDs
+#### 🔑 Supported Platform IDs
 
 `<platform_id>` must be one of the following valid platform IDs:
 
-| Platform ID | Platform    |
-|:------------|:------------|
-| `twitter`   | Twitter / X |
-| `instagram` | Instagram   |
-| `youtube`   | YouTube     |
-| `facebook`  | Facebook    |
-| `threads`   | Threads     |
-| `bilibili`  | Bilibili    |
-| `douyin`    | Douyin      |
-| `tiktok`    | TikTok      |
-| `weibo`     | Weibo       |
-| `xhs`       | Xiaohongshu |
-| `tieba`     | Baidu Tieba |
-| `wechat`    | WeChat OA   |
-| `kuaishou`  | Kuaishou    |
-| `coolapk`   | Coolapk     |
-| `pipixia`   | Pipixia     |
-| `zuiyou`    | Zuiyou      |
-| `xiaoheihe` | Xiaoheihe   |
-| `snapchat`  | Snapchat    |
-| `zhihu`     | Zhihu       |
-| `douban`    | Douban      |
+| Platform ID       | Platform        | Platform ID | Platform    |
+|:------------------|:----------------|:------------|:------------|
+| `twitter`         | Twitter / X     | `instagram` | Instagram   |
+| `youtube`         | YouTube         | `facebook`  | Facebook    |
+| `threads`         | Threads         | `bilibili`  | Bilibili    |
+| `douyin`          | Douyin          | `tiktok`    | TikTok      |
+| `weibo`           | Weibo           | `xhs`       | Xiaohongshu |
+| `tieba`           | Baidu Tieba     | `weixin`    | WeChat OA   |
+| `weixin_channels` | WeChat Channels | `kuaishou`  | Kuaishou    |
+| `coolapk`         | Coolapk         | `pipix`     | Pipixia     |
+| `zuiyou`          | Zuiyou          | `xiaoheihe` | Xiaoheihe   |
+| `snapchat`        | Snapchat        | `zhihu`     | Zhihu       |
+| `douban`          | Douban          | `bangumi`   | Bangumi     |
+| `toutiao`         | Toutiao         | `medium`    | Medium      |
 
-### 🍪 Platforms Supporting Cookies
-
-- `Twitter / X`
-- `Instagram`
-- `Threads`
-- `YouTube`
-- `Bilibili`
-- `Douyin`
-- `TikTok`
-- `Kuaishou`
-- `Xiaohongshu`
-- `Zhihu`
-- `Douban`
-
-### 📌 Configuration Examples
+#### 📌 Configuration Examples
 
 ##### Example 1: Use direct connections for mainland Chinese platforms and a proxy for overseas platforms
 
@@ -217,7 +238,7 @@ platforms:
     disable_downloader_proxy: true
 ```
 
-#### Example 2: Configure a Twitter cookie and use the global proxy
+##### Example 2: Configure a Twitter cookie and use the global proxy
 
 ```yaml
 default_parser_proxies: http://127.0.0.1:7890
@@ -229,7 +250,7 @@ platforms:
       - "auth_token=your_token_here; ct0=your_ct0_here"
 ```
 
-#### Example 3: Use a dedicated proxy pool for YouTube
+##### Example 3: Use a dedicated proxy pool for YouTube
 
 ```yaml
 platforms:
@@ -243,7 +264,7 @@ platforms:
       - http://proxy-eu-1:8080
 ```
 
-#### Example 4: Rotate Bilibili cookies, parse directly, and use a proxy for downloads
+##### Example 4: Rotate Bilibili cookies, parse directly, and use a proxy for downloads
 
 ```yaml
 platforms:
@@ -255,6 +276,8 @@ platforms:
       - "SESSDATA=xxx; bili_jct=xxx; buvid3=xxx"
       - "SESSDATA=yyy; bili_jct=yyy; buvid3=yyy"
 ```
+
+</details>
 
 ## 🤝 Contributing
 

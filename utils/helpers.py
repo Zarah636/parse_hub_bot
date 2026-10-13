@@ -50,6 +50,11 @@ async def run_cmd(*cmd: str, timeout: float = 30) -> str:
         proc.kill()
         await proc.wait()
         return ""
+    except asyncio.CancelledError:
+        if proc.returncode is None:
+            proc.kill()
+        await proc.wait()
+        raise
     return stdout.decode().strip()
 
 
@@ -93,8 +98,8 @@ def with_request_id[T](func: Callable[..., Awaitable[T]]) -> Callable[..., Await
     return wrapper
 
 
-def mask_secret(value: str) -> str:
+def mask_secret(value: str, stars: int = 6) -> str:
     if not value:
         return ""
     c = min(len(value) // 3, 4)
-    return f"{value[:c]}******{value[-c:]}"
+    return f"{value[:c]}{'*' * stars}{value[-c:]}"

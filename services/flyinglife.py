@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import hashlib
 import json
 import re
@@ -324,9 +325,7 @@ class FlyingLifeService:
             # silently discarded before the download and Guest send stages.
             image_refs = [ImageRef(url=media_url(item, "image")) for item in payload.images[1:]]
             if image_refs:
-                logger.info(
-                    f"FlyingLife 识别混合媒体: videos=1, video_covers=1, images={len(image_refs)}"
-                )
+                logger.info(f"FlyingLife 识别混合媒体: videos=1, video_covers=1, images={len(image_refs)}")
                 result: AnyParseResult = MultimediaParseResult(
                     title=payload.title,
                     content=payload.text,
@@ -352,15 +351,15 @@ class FlyingLifeService:
         if time.monotonic() < self._open_until:
             raise FlyingLifeUnavailable("远程解析处于熔断冷却期")
 
-        async with self._semaphore:
-            try:
-                payload = await self._fetch_payload(url, timeout=bs.flyinglife_inline_parse_timeout)
+        try:
+            async with asyncio.timeout(bs.flyinglife_inline_parse_timeout):
+                async with self._semaphore:
+                    payload = await self._fetch_payload(url, timeout=bs.flyinglife_inline_parse_timeout)
                 preview_result = self._build_result(payload, url, raw_url, proxy_media=False)
                 download_result = self._build_result(payload, url, raw_url, proxy_media=True)
-            except BaseException as e:
-                if isinstance(e, Exception):
-                    self._record_failure(e)
-                raise
+        except Exception as e:
+            self._record_failure(e)
+            raise
 
         self._record_success()
         return FlyingLifeInlineCandidate(preview_result=preview_result, download_result=download_result)
@@ -509,7 +508,7 @@ class FlyingLifeService:
                     await reporter.report(_t("解 析 中..."))
                     parse_result = await self.parse(url, raw_url)
                 else:
-                    parse_result = prepared_result
+                    parse_result = copy.deepcopy(prepared_result)
                 await reporter.report(_t("下 载 中..."))
 
                 async def progress(current: int, total: int, unit: str) -> None:

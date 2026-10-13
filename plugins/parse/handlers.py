@@ -1,4 +1,3 @@
-import asyncio
 import re
 
 from parsehub.types import AniRef, RichTextParseResult
@@ -19,7 +18,17 @@ from plugins.filters import (
 from plugins.helpers import build_caption, create_richtext_telegraph, format_label
 from plugins.parse.context import GIF_ONLY_SKIP_DOWNLOAD_COUNT_THRESHOLD, ParseOptions, ParseRequest
 from plugins.parse.reporters import MessageStatusReporter, disable_progress_on_report_forbidden
-from plugins.parse.sender import MessageSender, build_gif_button, send_cached, send_media, send_raw, send_zip
+from plugins.parse.rich import build_rich_media_blocks, is_rich_media_result, rich_caption_blocks
+from plugins.parse.sender import (
+    MessageSender,
+    PartialRichSend,
+    build_gif_button,
+    send_cached,
+    send_media,
+    send_raw,
+    send_rich_media,
+    send_zip,
+)
 from repo.settings import ParseMode
 from services import (
     CacheEntry,
@@ -31,6 +40,7 @@ from services import (
     flyinglife,
 )
 from services.cache import parse_cache, persistent_cache
+from services.tasks import claim_url, heavy_request, spawn
 from utils.helpers import to_list, with_request_id
 from utils.rate_limit import ParseRateLimitExceeded, parse_rate_limit
 
@@ -96,23 +106,22 @@ async def parse(cli: Client, msg: Message) -> None:
         items: list[str] = [m.group(2) for m in re.finditer(r"^(={2})(.*?)\1", raw_text, flags=re.S | re.M)]
         custom_content = items[0].strip() if items else ""
 
-    tasks = [
-        _handle_parse_request(
-            ParseRequest(
-                cli=cli,
-                msg=msg,
-                url=url,
-                mode=mode,
-                config=config,
-                t_=_t,
-                bypass_cache=bypass_cache,
-                delete_share_url_msg=config.auto_delete_url,
-                custom_content=custom_content,
+    for url in urls:
+        spawn(
+            _handle_parse_request(
+                ParseRequest(
+                    cli=cli,
+                    msg=msg,
+                    url=url,
+                    mode=mode,
+                    config=config,
+                    t_=_t,
+                    bypass_cache=bypass_cache,
+                    delete_share_url_msg=config.auto_delete_url,
+                    custom_content=custom_content,
+                )
             )
         )
-        for url in urls
-    ]
-    await asyncio.gather(*tasks)
 
 
 @with_request_id
@@ -163,7 +172,6 @@ async def handle_parse(req: ParseRequest) -> bool:
         await reporter.report_error(req.t_("获取原始链接"), e)
         return False
 
-    use_flyinglife = flyinglife.should_attempt(platform_id, context="message")
     try:
         # 与上游保持一致：规范化 URL 同时作为持久缓存和 singleflight 的统一身份。
         raw_url = await ParseService().get_raw_url(req.url)
@@ -171,10 +179,29 @@ async def handle_parse(req: ParseRequest) -> bool:
         await reporter.report_error(req.t_("获取原始链接"), e)
         return False
 
+    with claim_url(raw_url, enabled=options.singleflight) as owned:
+        if not owned:
+            await reporter.report(req.t_("已有相同任务正在解析，请稍后重试。"))
+            return False
+        return await _handle_pipeline(req, options, reporter, sender, platform_id, raw_url)
+
+
+@heavy_request
+async def _handle_pipeline(
+    req: ParseRequest,
+    options: ParseOptions,
+    reporter: MessageStatusReporter,
+    sender: MessageSender,
+    platform_id: str,
+    raw_url: str,
+) -> bool:
     if options.use_caching and not req.bypass_cache and (cached := await persistent_cache.get(raw_url)):
         logger.debug("file_id 缓存命中, 直接发送")
         try:
             await send_cached(sender, cached, raw_url, custom_content=req.custom_content)
+        except PartialRichSend as e:
+            await reporter.report_error(req.t_("上传"), e)
+            return False
         except Exception as e:
             logger.exception(e)
             logger.error("从缓存发送失败, 以上为错误信息")
@@ -192,6 +219,7 @@ async def handle_parse(req: ParseRequest) -> bool:
         singleflight=options.singleflight,
         skip_media_processing=options.skip_media_processing,
         download_video_cover=req.mode == ParseMode.PREVIEW and req.config.video_cover,
+        skip_flyinglife=not flyinglife.should_attempt(platform_id, context="message"),
         gif_only_skip_download_count_threshold=options.gif_only_skip_download_count_threshold,
         save_metadata=options.save_metadata,
         t=req.t_,
@@ -231,7 +259,12 @@ async def handle_parse(req: ParseRequest) -> bool:
             # Telegraph 发送
             logger.debug(f"富文本类型, 创建 Telegraph 页面: title={parse_result.title}")
             await sender.typing()
-            ph_url = await create_richtext_telegraph(req.cli, parse_result)
+            try:
+                ph_url = await create_richtext_telegraph(req.cli, parse_result)
+            except Exception as e:
+                logger.exception(e)
+                await reporter.report_error(req.t_("创建 Telegraph 页面"), e)
+                return False
             logger.debug(f"Telegraph 页面创建完成: {ph_url}")
             caption = build_caption(
                 parse_result,
@@ -283,6 +316,43 @@ async def handle_parse(req: ParseRequest) -> bool:
         if req.mode == ParseMode.ZIP:
             await send_zip(sender, result, reporter, _t=req.t_, custom_content=req.custom_content)
             return True
+
+        if req.config.rich_media_mode and is_rich_media_result(parse_result):
+            skip_gifs = (
+                sum(isinstance(m, AniRef) for m in to_list(parse_result.media)) > GIF_ONLY_SKIP_DOWNLOAD_COUNT_THRESHOLD
+            )
+            try:
+                blocks = await build_rich_media_blocks(result, video_cover=req.config.video_cover, skip_gifs=skip_gifs)
+                caption_blocks = rich_caption_blocks(
+                    parse_result.title,
+                    parse_result.content,
+                    raw_url,
+                    req.config,
+                    custom_content=req.custom_content,
+                )
+                media_list = await send_rich_media(sender, blocks, caption_blocks, slideshow=req.config.rich_slideshow)
+            except PartialRichSend as e:
+                await reporter.report_error(req.t_("上传"), e)
+                return False
+            except Exception as e:
+                logger.warning(f"富文本媒体发送失败, 退回常规媒体发送: {e}")
+            else:
+                if skip_gifs:
+                    await sender.text(
+                        format_label(req.t_("GIF 过多跳过上传, 请自行下载")),
+                        reply_markup=build_gif_button(to_list(parse_result.media)),
+                    )
+                elif media_list is not None:
+                    await persistent_cache.set(
+                        raw_url,
+                        CacheEntry(
+                            parse_result=CacheParseResult(title=parse_result.title, content=parse_result.content),
+                            media=media_list,
+                            rich_media=True,
+                        ),
+                    )
+                await reporter.dismiss()
+                return True
 
         logger.debug(f"开始上传媒体: media_count={len(result.processed_list)}")
         await reporter.report(req.t_("上 传 中..."))

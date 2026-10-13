@@ -9,7 +9,7 @@ from typing import Any, BinaryIO, cast
 from easy_ai18n import PreLocaleSelector
 from parsehub.types import AniFile, AniRef, AnyMediaRef, AnyParseResult, ImageFile, LivePhotoFile, VideoFile
 from pyrogram import Client, enums
-from pyrogram.errors import FloodWait, Forbidden, SlowmodeWait, WebpageCurlFailed, WebpageMediaEmpty
+from pyrogram.errors import BadRequest, FloodWait, Forbidden, SlowmodeWait, WebpageCurlFailed, WebpageMediaEmpty
 from pyrogram.types import (
     InlineKeyboardButton as Ikb,
 )
@@ -21,16 +21,28 @@ from pyrogram.types import (
     InputMediaDocument,
     InputMediaPhoto,
     InputMediaVideo,
+    InputRichBlock,
+    InputRichBlockDocument,
     InputRichMessage,
     LinkPreviewOptions,
     Message,
-    ReplyParameters,
 )
 
 from core import bs
 from log import logger
 from plugins.helpers import build_caption, build_caption_by_str, format_label
-from plugins.parse.cache import build_cached_media_group, cache_media_from_message
+from plugins.parse.cache import (
+    build_cached_media_group,
+    cache_media_from_message,
+    cache_media_from_rich_message,
+)
+from plugins.parse.rich import (
+    RICH_MEDIA_LIMIT,
+    cached_rich_media_blocks,
+    is_rich_media_result,
+    rich_caption_blocks,
+    rich_media_messages,
+)
 from repo.settings import SettingsConfig
 from services import CacheEntry, CacheMedia, CacheMediaType, CacheParseResult, PipelineResult, StatusReporter
 from services.media import ProcessedMedia, resolve_media_info
@@ -42,6 +54,7 @@ GIF_ONLY_SKIP_DOWNLOAD_COUNT_THRESHOLD = 5
 
 
 type ReplyMediaGroupItem = InputMediaPhoto | InputMediaVideo | InputMediaDocument
+type PathType = str | os.PathLike[str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,10 +63,6 @@ class MessageSender:
     msg: Message
     config: SettingsConfig
     delete_after_seconds: float | None = None
-
-    @property
-    def reply_parameters(self) -> ReplyParameters | None:
-        return None if self.config.reply_msg else ReplyParameters()
 
     def delete_after(self, seconds: float | int | None) -> "MessageSender":
         if not seconds:
@@ -91,16 +100,17 @@ class MessageSender:
                 return await send_coro_fn()
             except (FloodWait, SlowmodeWait) as e:
                 if attempt < MAX_RETRIES - 1:
-                    logger.warning(f"{e.ID} 重试 ({attempt + 1}/{MAX_RETRIES})，等待 {e.value}s")
-                    await asyncio.sleep(e.value)
+                    wait_seconds = e.value if isinstance(e.value, int | float) else 0.5
+                    logger.warning(f"{e.ID} 重试 ({attempt + 1}/{MAX_RETRIES})，等待 {wait_seconds}s")
+                    await asyncio.sleep(float(wait_seconds))
                 else:
                     raise
             except Forbidden as e:
                 logger.warning(f"消息发送失败, Bot 无权限: {e}")
-                break
+                raise
             except Exception as e:
                 logger.warning(f"消息发送失败: {e}")
-                break
+                raise
             await asyncio.sleep(0.5)
         raise RuntimeError("消息发送失败")
 
@@ -130,11 +140,10 @@ class MessageSender:
             Message,
             await self._send_and_schedule_delete(
                 partial(
-                    self.msg.reply_text,
+                    self.msg.reply if self.config.reply_msg else self.msg.answer,
                     text,
                     link_preview_options=link_preview_options,
                     reply_markup=reply_markup,
-                    reply_parameters=self.reply_parameters,
                 )
             ),
         )
@@ -155,7 +164,7 @@ class MessageSender:
 
     async def document(
         self,
-        document: str | BinaryIO,
+        document: PathType | BinaryIO,
         *,
         caption: str | None = None,
         force_document: bool | None = None,
@@ -165,11 +174,12 @@ class MessageSender:
             Message,
             await self._send_and_schedule_delete(
                 partial(
-                    self.msg.reply_document,
+                    (self.msg.reply_document if self.config.reply_msg else self.msg.answer_document)
+                    if use_reply_policy
+                    else self.msg.reply_document,
                     document,
                     caption=caption or "",
                     force_document=force_document,
-                    reply_parameters=self.reply_parameters if use_reply_policy else None,
                 )
             ),
         )
@@ -179,7 +189,7 @@ class MessageSender:
 
     async def force_document(
         self,
-        document: str | BinaryIO,
+        document: PathType | BinaryIO,
         *,
         caption: str | None = None,
         use_reply_policy: bool = True,
@@ -191,20 +201,24 @@ class MessageSender:
             use_reply_policy=use_reply_policy,
         )
 
-    async def photo(self, photo: str | BinaryIO, *, caption: str | None = None) -> Message:
+    async def photo(self, photo: PathType | BinaryIO, *, caption: str | None = None) -> Message:
         return cast(
             Message,
             await self._send_and_schedule_delete(
-                partial(self.msg.reply_photo, photo, caption=caption or "", reply_parameters=self.reply_parameters)
+                partial(
+                    self.msg.reply_photo if self.config.reply_msg else self.msg.answer_photo,
+                    photo,
+                    caption=caption or "",
+                )
             ),
         )
 
     async def video(
         self,
-        video: str | BinaryIO,
+        video: PathType | BinaryIO,
         *,
         caption: str | None = None,
-        video_cover: str | BinaryIO | None = None,
+        video_cover: PathType | BinaryIO | None = None,
         duration: int | None = None,
         width: int | None = None,
         height: int | None = None,
@@ -214,7 +228,7 @@ class MessageSender:
             Message,
             await self._send_and_schedule_delete(
                 partial(
-                    self.msg.reply_video,
+                    self.msg.reply_video if self.config.reply_msg else self.msg.answer_video,
                     video,
                     caption=caption or "",
                     video_cover=video_cover,
@@ -222,17 +236,16 @@ class MessageSender:
                     width=width or 0,
                     height=height or 0,
                     supports_streaming=True if supports_streaming is None else supports_streaming,
-                    reply_parameters=self.reply_parameters,
                 )
             ),
         )
 
     async def streaming_video(
         self,
-        video: str | BinaryIO,
+        video: PathType | BinaryIO,
         *,
         caption: str | None = None,
-        video_cover: str | BinaryIO | None = None,
+        video_cover: PathType | BinaryIO | None = None,
         duration: int | None = None,
         width: int | None = None,
         height: int | None = None,
@@ -249,10 +262,10 @@ class MessageSender:
 
     async def streaming_video_with_cover_fallback(
         self,
-        video: str | BinaryIO,
+        video: PathType | BinaryIO,
         *,
         caption: str | None = None,
-        video_cover: str | BinaryIO | None = None,
+        video_cover: PathType | BinaryIO | None = None,
         duration: int | None = None,
         width: int | None = None,
         height: int | None = None,
@@ -276,22 +289,24 @@ class MessageSender:
                 height=height,
             )
 
-    async def animation(self, animation: str | BinaryIO, *, caption: str | None = None) -> Message:
+    async def animation(self, animation: PathType | BinaryIO, *, caption: str | None = None) -> Message:
         return cast(
             Message,
             await self._send_and_schedule_delete(
                 partial(
-                    self.msg.reply_animation,
+                    self.msg.reply_animation if self.config.reply_msg else self.msg.answer_animation,
                     animation,
                     caption=caption or "",
-                    reply_parameters=self.reply_parameters,
                 )
             ),
         )
 
     async def media_group(self, media: list[ReplyMediaGroupItem]) -> list[Message]:
         return await self._send_and_schedule_delete(
-            partial(self.msg.reply_media_group, media=cast(Any, media), reply_parameters=self.reply_parameters)
+            partial(
+                self.msg.reply_media_group if self.config.reply_msg else self.msg.answer_media_group,
+                media=cast(Any, media),
+            )
         )
 
     async def rich_message(
@@ -300,21 +315,13 @@ class MessageSender:
         *,
         reply_markup: Ikm | None = None,
     ) -> Message:
-        if not self.msg.chat or not self.msg.chat.id:
-            raise ValueError("not chat or chat_id")
-        reply_parameters = (
-            ReplyParameters(message_id=self.msg.id) if self.reply_parameters is None else self.reply_parameters
-        )
         return cast(
             Message,
             await self._send_and_schedule_delete(
                 partial(
-                    self.cli.send_rich_message,
-                    chat_id=self.msg.chat.id,
-                    message_thread_id=self.msg.message_thread_id,
+                    self.msg.reply_rich if self.config.reply_msg else self.msg.answer_rich,
                     rich_message=rich_message,
                     reply_markup=reply_markup,
-                    reply_parameters=reply_parameters,
                 )
             ),
         )
@@ -450,11 +457,12 @@ async def send_media(
         logger.debug(f"多媒体模式发送: total={all_count}")
         media_list = await send_multi(sender, photos_videos, animations, caption, media_refs, _t=_t)
 
-    if media_list is None:
+    if media_list is None or len(media_list) != all_count or len(processed_list) != len(media_refs):
         return None
     return CacheEntry(
         parse_result=CacheParseResult(title=parse_result.title, content=parse_result.content),
         media=media_list,
+        rich_media=is_rich_media_result(parse_result),
     )
 
 
@@ -485,14 +493,77 @@ async def send_cached(sender: MessageSender, entry: CacheEntry, url: str, *, cus
         await sender.text_no_preview(caption)
         return
 
+    if sender.config.rich_media_mode and entry.rich_media:
+        try:
+            caption_blocks = rich_caption_blocks(
+                entry.parse_result.title,
+                entry.parse_result.content,
+                url,
+                sender.config,
+                custom_content=custom_content,
+            )
+            await send_rich_media(
+                sender, cached_rich_media_blocks(entry.media), caption_blocks, slideshow=sender.config.rich_slideshow
+            )
+            return
+        except PartialRichSend:
+            raise
+        except Exception as e:
+            logger.warning(f"富文本缓存发送失败, 退回常规发送: {e}")
+
     if len(entry.media) == 1:
         await send_cached_single(sender, entry.media[0], caption, video_cover=sender.config.video_cover)
     else:
         await send_cached_multi(sender, entry.media, caption, video_cover=sender.config.video_cover)
 
 
-def media_input(media: str | BinaryIO | None) -> str | BinaryIO:
-    return cast(str | BinaryIO, media)
+class PartialRichSend(RuntimeError):
+    """Some batches are delivered: never resend the entire post."""
+
+
+async def send_rich_media(
+    sender: MessageSender,
+    blocks: list[InputRichBlock],
+    caption_blocks: list[InputRichBlock],
+    *,
+    slideshow: bool,
+) -> list[CacheMedia] | None:
+    """图文/多媒体以富文本消息发送: 所有媒体进幻灯片/拼图(超出上限自动分条, 文档块除外),
+    文档独立块和 caption 块附在最后一条。返回缓存媒体, 与返回块数不符时返回 None。"""
+    # 文档块无法进幻灯片/拼图, 拆为独立块
+    standalone = [b for b in blocks if isinstance(b, InputRichBlockDocument)]
+    slideshow_blocks = [b for b in blocks if not isinstance(b, InputRichBlockDocument)]
+
+    media_list: list[CacheMedia] = []
+    sent_count = 0
+    for message in rich_media_messages(blocks, caption_blocks, slideshow=slideshow, limit=RICH_MEDIA_LIMIT):
+        send_attempted = False
+        try:
+            await sender.upload_photo()
+            send_attempted = True
+            sent = await sender.rich_message(message)
+            sent_count += 1
+            if sent:
+                media_list.extend(cache_media_from_rich_message(sent))
+        except Exception as e:
+            if sent_count:
+                raise PartialRichSend(f"已发送 {sent_count} 批媒体，后续上传失败，请单独重试剩余内容。") from e
+            if send_attempted and not isinstance(e, BadRequest):
+                raise PartialRichSend("媒体发送状态不明，请确认聊天记录后重试。") from e
+            raise
+
+    # Count every uploaded input; truncated server responses must not become a full-link cache.
+    media_inputs = slideshow_blocks + standalone
+    if len(media_list) != len(media_inputs):
+        logger.warning(f"富文本媒体数量不符: sent={len(media_inputs)}, got={len(media_list)}, 不写缓存")
+        return None
+    # Keep the type actually encoded by Telegram, even when an input video
+    # becomes an animation. Changing the label alone invalidates cached IDs.
+    return media_list
+
+
+def media_input(media: PathType | BinaryIO | None) -> PathType | BinaryIO:
+    return cast(PathType | BinaryIO, media)
 
 
 def build_input_media(

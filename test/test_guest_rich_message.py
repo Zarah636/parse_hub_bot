@@ -11,6 +11,7 @@ os.environ.setdefault("BOT_TOKEN", "1:test")
 from pyrogram import Client, raw, utils  # noqa: E402
 from pyrogram.file_id import FileType  # noqa: E402
 
+from services import CacheMedia, CacheMediaType  # noqa: E402
 from services.guest_rich_message import (  # noqa: E402
     PreparedRichMedia,
     RichLayout,
@@ -23,7 +24,6 @@ from services.guest_rich_message import (  # noqa: E402
     choose_layout,
     delete_inline_guest_message,
 )
-from services import CacheMedia, CacheMediaType  # noqa: E402
 
 
 def photo(width: int = 1200, height: int = 1200) -> RichMediaSource:
@@ -320,6 +320,7 @@ class GuestRichMessageUploadTests(unittest.IsolatedAsyncioTestCase):
             size=1024,
             dc_id=2,
             attributes=[],
+            thumbs=[raw.types.PhotoSize(type="m", w=320, h=180, size=100)],
         )
         cli.invoke = AsyncMock(return_value=raw.types.MessageMediaDocument(document=uploaded_document))
 

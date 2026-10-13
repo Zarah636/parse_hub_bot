@@ -11,7 +11,7 @@ os.environ.setdefault("API_ID", "1")
 os.environ.setdefault("API_HASH", "test")
 os.environ.setdefault("BOT_TOKEN", "1:test")
 
-from parsehub.types import VideoParseResult, VideoRef  # noqa: E402
+from parsehub.types import ImageRef, MultimediaParseResult, VideoParseResult, VideoRef  # noqa: E402
 from pyrogram.types import ChosenInlineResult, InlineQueryResultPhoto  # noqa: E402
 
 from plugins.parse.inline import (  # noqa: E402
@@ -214,7 +214,7 @@ class FlyingLifeInlineTests(unittest.IsolatedAsyncioTestCase):
             patch("plugins.parse.inline.HybridParsePipeline", return_value=pipeline) as hybrid_pipeline,
             patch("plugins.parse.inline.resolve_media_info", return_value=(1920, 1080, 10)),
             patch(
-                "plugins.parse.inline.create_video_thumbnail",
+                "plugins.parse.inline.prepare_video_thumbnail",
                 AsyncMock(return_value=Path("thumb.jpg")),
             ),
             patch(
@@ -308,7 +308,7 @@ class FlyingLifeInlineTests(unittest.IsolatedAsyncioTestCase):
             patch("plugins.parse.inline.HybridParsePipeline", return_value=pipeline) as hybrid_pipeline,
             patch("plugins.parse.inline.resolve_media_info", return_value=(1280, 720, 30)),
             patch(
-                "plugins.parse.inline.create_video_thumbnail",
+                "plugins.parse.inline.prepare_video_thumbnail",
                 AsyncMock(return_value=Path("bilibili-thumb.jpg")),
             ),
             patch(
@@ -343,7 +343,64 @@ class FlyingLifeInlineTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(is_inline_cache_ready(CacheEntry(parse_result=parse_result, media=[without_thumbnail])))
         self.assertTrue(is_inline_cache_ready(CacheEntry(parse_result=parse_result, media=[with_thumbnail])))
 
-    async def test_inline_query_removes_legacy_video_cache_without_thumbnail(self) -> None:
+    async def test_selected_item_and_segmented_video_do_not_replace_full_link_cache(self) -> None:
+        video = VideoRef(url="https://example.com/video.mp4")
+        scenarios = [
+            (MultimediaParseResult(media=[video, ImageRef(url="https://example.com/photo.jpg")]), [Path("video.mp4")]),
+            (VideoParseResult(video=video), [Path("part1.mp4"), Path("part2.mp4")]),
+        ]
+        for parse_result, paths in scenarios:
+            with self.subTest(parse_result=parse_result.type):
+                processed = cast(
+                    ProcessedMedia, SimpleNamespace(output_paths=paths, source=SimpleNamespace(path=paths[0]))
+                )
+                result = PipelineResult(parse_result=parse_result, processed_list=[processed], engine="parsehub")
+                pipeline = MagicMock()
+                pipeline.__enter__.return_value = pipeline
+                pipeline.run = AsyncMock(return_value=result)
+                parse_service = MagicMock()
+                parse_service.get_platform.return_value = SimpleNamespace(id="douyin")
+                parse_service.get_raw_url = AsyncMock(return_value="https://www.douyin.com/video/1")
+                settings = MagicMock()
+                settings.get_config_by_user = AsyncMock(return_value=SettingsConfig(video_cover=False))
+                user = MagicMock()
+                user.get_lang = AsyncMock(return_value="test")
+                cli = MagicMock(edit_inline_media=AsyncMock())
+                chosen = cast(
+                    ChosenInlineResult,
+                    SimpleNamespace(
+                        result_id="download_0",
+                        from_user=SimpleNamespace(id=123),
+                        inline_message_id="inline",
+                        query="https://www.douyin.com/video/1",
+                    ),
+                )
+                with (
+                    patch("plugins.parse.inline.get_session", return_value=FakeSessionContext()),
+                    patch("plugins.parse.inline.UserService", return_value=user),
+                    patch("plugins.parse.inline.SettingsService", return_value=settings),
+                    patch("plugins.parse.inline.t_", {"test": lambda text: text}),
+                    patch("plugins.parse.inline.ParseService", return_value=parse_service),
+                    patch.object(flyinglife, "should_attempt", return_value=False),
+                    patch("plugins.parse.inline.parse_cache.get", AsyncMock(return_value=None)),
+                    patch("plugins.parse.inline.parse_cache.set", AsyncMock()),
+                    patch("plugins.parse.inline.InlineStatusReporter", return_value=AsyncMock()),
+                    patch("plugins.parse.inline.HybridParsePipeline", return_value=pipeline),
+                    patch("plugins.parse.inline.resolve_media_info", return_value=(1280, 720, 10)),
+                    patch("plugins.parse.inline.prepare_video_thumbnail", AsyncMock(return_value=Path("thumb.jpg"))),
+                    patch(
+                        "plugins.parse.inline.upload_inline_video_for_cache",
+                        AsyncMock(
+                            return_value=CacheMedia(type=CacheMediaType.VIDEO, file_id="selected", has_thumbnail=True)
+                        ),
+                    ),
+                    patch("plugins.parse.inline.persistent_cache.set", AsyncMock()) as cache_set,
+                ):
+                    await inline_result_download(cli, chosen)
+                cache_set.assert_not_awaited()
+                cli.edit_inline_media.assert_awaited_once()
+
+    async def test_inline_query_preserves_legacy_video_cache_without_thumbnail(self) -> None:
         raw_url = "https://www.bilibili.com/video/BV1legacy"
         stale = CacheEntry(
             parse_result=CacheParseResult(title="legacy"),
@@ -374,7 +431,7 @@ class FlyingLifeInlineTests(unittest.IsolatedAsyncioTestCase):
         ):
             await call_inline_parse(MagicMock(), inline_query)
 
-        cache_remove.assert_awaited_once_with(raw_url)
+        cache_remove.assert_not_awaited()
         inline_query.answer.assert_awaited_once_with([], cache_time=0)
 
 

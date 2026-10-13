@@ -39,7 +39,7 @@ async def _get_t(user_id: int) -> PreLocaleSelector:
 
 @Client.on_message(filters.command("flyinglife"))
 async def flyinglife_panel(_: Client, msg: Message) -> None:
-    if not msg.from_user:
+    if not msg.from_user or msg.from_user.id not in bs.admin_ids:
         return
     text, markup = _render_panel(await _get_t(msg.from_user.id))
     await msg.reply_text(text, reply_markup=markup)
@@ -48,6 +48,9 @@ async def flyinglife_panel(_: Client, msg: Message) -> None:
 @Client.on_callback_query(filters.regex(r"^flctl\|"))
 async def flyinglife_callback(_: Client, cq: CallbackQuery) -> None:
     if not cq.data or not cq.message:
+        return
+    if cq.from_user.id not in bs.admin_ids:
+        await cq.answer("仅 Bot 管理员可以修改全局解析引擎。", show_alert=True)
         return
     _t = await _get_t(cq.from_user.id)
     parts = str(cq.data).split("|")

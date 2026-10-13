@@ -15,6 +15,8 @@ from services.hybrid import HybridParsePipeline, _inflight  # noqa: E402
 from services.pipeline import (  # noqa: E402
     PipelineResult,
     StatusReporter,
+)
+from services.pipeline import (
     _inflight as parsehub_inflight,
 )
 

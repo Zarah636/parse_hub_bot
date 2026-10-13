@@ -139,7 +139,9 @@ def restore_cfg_target(cq: CallbackQuery, data: CfgCQData) -> AnySettingsTarget 
             return ChannelSettingsTarget(telegram_chat_id=data.channel_id)
 
 
-def cfg_callback_data(action: CfgAction, value: str, target: AnySettingsTarget | None) -> str:
+def cfg_callback_data(
+    action: CfgAction, value: str, target: AnySettingsTarget | None, expanded: str | None = None
+) -> str:
     scope: CfgScopeCode | None
     match target:
         case UserSettingsTarget():
@@ -165,6 +167,7 @@ def cfg_callback_data(action: CfgAction, value: str, target: AnySettingsTarget |
         user_id=target.telegram_user_id
         if isinstance(target, UserSettingsTarget | GroupMemberSettingsTarget | ForumTopicMemberSettingsTarget)
         else None,
+        expanded=expanded,
     ).unparse()
 
 
@@ -233,6 +236,10 @@ async def resolve_channel_target(
     try:
         chat = await cli.get_chat(channel)
     except Exception:
+        await msg.reply(format_label(_t("Bot 未加入该频道, 请先将 Bot 加入频道后再配置")))
+        return None
+
+    if not chat:
         await msg.reply(format_label(_t("Bot 未加入该频道, 请先将 Bot 加入频道后再配置")))
         return None
 

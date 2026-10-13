@@ -34,36 +34,41 @@
 
 ## ✨ 功能特性
 
-- 🎬 **多平台解析** — 抖音、B站、YouTube、小红书、Twitter 等 16+ 主流平台一站搞定
+- 🎬 **多平台解析** — 抖音、B站、YouTube、小红书、Twitter 等 20+ 主流平台一站搞定
 - ⚡ **内联模式** — 在任意聊天窗口输入 `@BotUsername <链接>` 即可解析
+- 👥 **访客模式** — 在任意聊天内 `@BotUsername` 即可解析
 - 🖼️ **Tg 兼容** — 自动转码、长图切割、大视频分段
 - 📦 **多种模式** — 在线预览, 原始文件, 打包下载
 - 🐳 **Docker 部署** — 开箱即用
 
 ## 📦 支持平台一览
 
-| 平台            | 视频 | 图文 |        其他         |
-|:----------------|:----:|:----:|:-------------------:|
-| **Twitter / X** |  ✅  |  ✅  |       📝 文章       |
-| **Instagram**   |  ✅  |  ✅  |                     |
-| **YouTube**     |  ✅  |      |       🎵 音乐       |
-| **Facebook**    |  ✅  |      |                     |
-| **Threads**     |  ✅  |  ✅  |                     |
-| **Bilibili**    |  ✅  |      |       📝 动态       |
-| **抖音**        |  ✅  |  ✅  |       ☀️日常        |
-| **TikTok**      |  ✅  |  ✅  |                     |
-| **微博**        |  ✅  |  ✅  |                     |
-| **小红书**      |  ✅  |  ✅  |                     |
-| **贴吧**        |  ✅  |  ✅  |                     |
-| **微信公众号**  |      |  ✅  |                     |
-| **快手**        |  ✅  |  ✅  |                     |
-| **酷安**        |      |  ✅  |                     |
-| **皮皮虾**      |  ✅  |  ✅  |                     |
-| **最右**        |  ✅  |  ✅  |                     |
-| **小黑盒**      |  ✅  |  ✅  |                     |
-| **Snapchat**    |  ✅  |      |                     |
-| **知乎**        |  ✅  |  ✅  | 🐶 问答, 专栏, 圈子 |
-| **豆瓣**        |  ✅  |  ✅  |     👥 小组话题     |
+| 平台            | 视频 | 图文 |            其他             |
+|:----------------|:----:|:----:|:---------------------------:|
+| **Twitter / X** |  ✅  |  ✅  |           📝 文章           |
+| **Instagram**   |  ✅  |  ✅  |                             |
+| **YouTube**     |  ✅  |      |           🎵 音乐           |
+| **Facebook**    |  ✅  |      |                             |
+| **Threads**     |  ✅  |  ✅  |                             |
+| **Bilibili**    |  ✅  |      |           📝 动态           |
+| **抖音**        |  ✅  |  ✅  |           ☀️日常            |
+| **TikTok**      |  ✅  |  ✅  |                             |
+| **微博**        |  ✅  |  ✅  |                             |
+| **小红书**      |  ✅  |  ✅  |                             |
+| **贴吧**        |  ✅  |  ✅  |                             |
+| **微信公众号**  |      |  ✅  |                             |
+| **微信视频号**  |  ✅  |      |                             |
+| **快手**        |  ✅  |  ✅  |                             |
+| **酷安**        |      |  ✅  |                             |
+| **皮皮虾**      |  ✅  |  ✅  |                             |
+| **最右**        |  ✅  |  ✅  |                             |
+| **小黑盒**      |  ✅  |  ✅  |                             |
+| **Snapchat**    |  ✅  |      |                             |
+| **知乎**        |  ✅  |  ✅  |  🐶 问答, 专栏, 圈子, 日报  |
+| **豆瓣**        |  ✅  |  ✅  |         👥 小组话题         |
+| **Bangumi**     |      |  ✅  | 💬 条目讨论, 日志, 小组话题 |
+| **今日头条**    |  ✅  |  ✅  |       📰 文章, 微头条       |
+| **Medium**      |  ✅  |  ✅  |           📰 文章           |
 
 > 🔧 更多平台持续接入中...
 
@@ -79,6 +84,7 @@ docker run -d \
   -e API_ID=你的API_ID \
   -e API_HASH=你的API_HASH \
   -e BOT_TOKEN=你的BOT_TOKEN \
+  -e ADMIN_IDS=你的TG用户ID \
   -v ./logs:/app/logs \
   -v ./data:/app/data \
   --name parse-hub-bot \
@@ -109,6 +115,8 @@ BOT_TOKEN=     # 机器人 Token，向 @BotFather 申请
 
 # 🔲 可选
 BOT_PROXY=     # Bot 连接 TG 使用的代理，例：http://127.0.0.1:7890
+ADMIN_IDS=     # 管理员的 TG 用户 ID，逗号分隔，例：123456789,987654321
+               # 管理员可私聊使用 /admin 管理平台配置，并接收 Cookie 失效告警
 ```
 
 ### FlyingLife 优先解析（可选）
@@ -135,9 +143,70 @@ docker exec -it parse-hub-bot python tools/flyinglife_auth.py --reauth
 
 认证工具支持交互式邮箱登录或直接输入 Session ID，只保存验证成功的 Session ID 到 `data/config/flyinglife_auth.json`，不会保存邮箱和密码。请将该文件视为密钥，不要提交到 Git。
 
+私聊 `/flyinglife` 可以切换全局解析优先级，同时影响普通、内联和游客解析。此命令及按钮仅供 `.env` 中 `ADMIN_IDS` 指定的管理员使用。新版 `/admin` 管理平台代理和 Cookie，FlyingLife 的会话仍由上述认证工具管理。
+
+### 增强版升级至上游 v2.2.0
+
+增强版采用上游的配置面板、管理员平台配置、Cookie 告警、富媒体普通消息和 Telegraph 分页，同时保留 FlyingLife 优先解析、游客的原生单媒体回复、纯图拼图和混合媒体幻灯片。游客幻灯片不支持时依次尝试完整拼图和带提示的单媒体回复；超过 50 个媒体时提示私聊解析，避免把截断图集写成完整缓存。
+
+普通解析的富媒体布局由 `/cfg` 中的富媒体及幻灯片开关控制。游客使用其兼容布局。缓存按规范化后的完整链接共享；内联只选择其中一个媒体时不覆盖整帖缓存，旧视频缓存缺少内嵌缩略图时仅跳过内联复用，仍保留给普通解析和游客模式。完整单视频内联上传可以写入带缩略图的共享缓存。
+
+`PARSE_CONCURRENCY` 控制普通、游客和选中内联结果后的下载、转码及上传总并发，默认 `2`，R5S 可以先设为 `1`。游客先返回进度消息再排队，相同链接在排队前提示重复任务。`PARSE_SHUTDOWN_TIMEOUT` 默认 `30` 秒，停机时先等待任务，超时取消后再关闭 Telegram、数据库和下载资源。普通富媒体分批发送中途失败会停止并提示，不会自动重发已完成的批次。
+
+升级前停止旧容器并备份整个 `data/`（包含数据库、Telegram 会话、平台配置、FlyingLife 会话和运行时开关），同时保存旧镜像和 `.env`。首次启动自动执行数据库迁移，增强版旧头 `c4f62d91a7e8` 与上游头 `765f26cfd84a` 合并至 `ae26d014c220`。上游迁移会清理小红书登录页的无效缓存，不会清空正常缓存。回退时应恢复旧镜像与升级前的数据备份；仅切换旧镜像无法撤销这次迁移。
+
+请按新锁文件重新构建增强版源码镜像。依赖要求为 Kurigram `>=2.2.26,<2.3` 和 ParseHub `>=2.3.3`；只拉取上游预构建镜像不会包含增强功能。上线验收应覆盖普通解析、内联选中、游客回复、FlyingLife 故障回退和一次停机重启。本地模拟测试及类型检查通过，不等于 Telegram 和 R5S 上的实际验收完成。
+
 ### 🌐 平台配置
 
-用于为各解析平台单独配置 **代理**和 **Cookie**，位于 `data/config/platform_config.yaml`
+用于为各解析平台单独配置 **代理** 和 **Cookie**，推荐通过 `/admin` 在线管理，修改后立即生效，无需重启。
+
+#### 🛠️ 在线管理
+
+1. 在 `.env` 中填写 `ADMIN_IDS`
+2. 私聊 Bot 发送 `/admin` 打开配置面板
+
+- **全局默认代理** — 设置解析 / 下载的默认代理池
+- **平台配置** — 按平台选择代理模式（全局 / 专用 / 直连），管理专用代理池和 Cookie
+- **一键测试** — 测试代理连通性；发送链接，用所选 Cookie 逐条解析验证是否可用
+- **失效告警** — Cookie 连续解析失败 3 次时通知管理员，可直接跳转更换并用原链接重试
+- **导入 / 导出** — 导出完整配置备份，导入文件或 YAML 整份替换；手动改过文件后点「重载配置」生效
+
+### 🔀 代理优先级
+
+解析代理和下载代理各自遵循相同的优先级逻辑：
+
+```
+禁用代理 (disable_*_proxy: true)
+  ↓ 未禁用
+平台专用代理 (parser_proxies / downloader_proxies)
+  ↓ 未配置
+全局默认代理 (default_parser_proxies / default_downloader_proxies)
+  ↓ 未配置
+直连（不使用代理）
+```
+
+> 💡 当代理池中有多个地址时，每次请求会 **随机选取**一个
+
+### 🍪 支持 Cookie 的平台
+
+- `Twitter / X`
+- `Instagram`
+- `Threads`
+- `YouTube`
+- `Bilibili`
+- `抖音`
+- `TikTok`
+- `快手`
+- `小红书`
+- `知乎`
+- `豆瓣`
+- `微信视频号`（需要填腾讯元宝 yuanbao.tencent.com 登录后的 Cookie）
+
+<details>
+<summary>📄 手动编辑配置文件</summary>
+
+配置文件位于 `data/config/platform_config.yaml`，也可以直接编辑，修改后在 `/admin` 点「重载配置」或重启 Bot 生效。
 
 ```yaml
 # ═══════════════════════ 全局默认代理 ═══════════════════════
@@ -164,64 +233,26 @@ platforms:
       - "cookie_string_2"
 ```
 
-### 🔀 代理优先级
-
-解析代理和下载代理各自遵循相同的优先级逻辑：
-
-```
-禁用代理 (disable_*_proxy: true)
-  ↓ 未禁用
-平台专用代理 (parser_proxies / downloader_proxies)
-  ↓ 未配置
-全局默认代理 (default_parser_proxies / default_downloader_proxies)
-  ↓ 未配置
-直连（不使用代理）
-```
-
-> 💡 当代理池中有多个地址时，每次请求会 **随机选取**一个
-
-### 🔑 支持的平台 ID
+#### 🔑 支持的平台 ID
 
 `<platform_id>` 必须是以下合法的平台 ID：
 
-| 平台 ID     | 对应平台    |
-|:------------|:------------|
-| `twitter`   | Twitter / X |
-| `instagram` | Instagram   |
-| `youtube`   | YouTube     |
-| `facebook`  | Facebook    |
-| `threads`   | Threads     |
-| `bilibili`  | 哔哩哔哩    |
-| `douyin`    | 抖音        |
-| `tiktok`    | TikTok      |
-| `weibo`     | 微博        |
-| `xhs`       | 小红书      |
-| `tieba`     | 百度贴吧    |
-| `wechat`    | 微信公众号  |
-| `kuaishou`  | 快手        |
-| `coolapk`   | 酷安        |
-| `pipixia`   | 皮皮虾      |
-| `zuiyou`    | 最右        |
-| `xiaoheihe` | 小黑盒      |
-| `snapchat`  | Snapchat    |
-| `zhihu`     | 知乎        |
-| `douban`    | 豆瓣        |
+| 平台 ID           | 对应平台    | 平台 ID     | 对应平台   |
+|:------------------|:------------|:------------|:-----------|
+| `twitter`         | Twitter / X | `instagram` | Instagram  |
+| `youtube`         | YouTube     | `facebook`  | Facebook   |
+| `threads`         | Threads     | `bilibili`  | 哔哩哔哩   |
+| `douyin`          | 抖音        | `tiktok`    | TikTok     |
+| `weibo`           | 微博        | `xhs`       | 小红书     |
+| `tieba`           | 百度贴吧    | `weixin`    | 微信公众号 |
+| `weixin_channels` | 微信视频号  | `kuaishou`  | 快手       |
+| `coolapk`         | 酷安        | `pipix`     | 皮皮虾     |
+| `zuiyou`          | 最右        | `xiaoheihe` | 小黑盒     |
+| `snapchat`        | Snapchat    | `zhihu`     | 知乎       |
+| `douban`          | 豆瓣        | `bangumi`   | Bangumi    |
+| `toutiao`         | 今日头条    | `medium`    | Medium     |
 
-### 🍪 支持 Cookie 的平台
-
-- `Twitter / X`
-- `Instagram`
-- `Threads`
-- `YouTube`
-- `Bilibili`
-- `抖音`
-- `TikTok`
-- `快手`
-- `小红书`
-- `知乎`
-- `豆瓣`
-
-### 📌 配置示例
+#### 📌 配置示例
 
 ##### 示例 1：国内平台直连，海外平台走代理
 
@@ -241,7 +272,7 @@ platforms:
     disable_downloader_proxy: true
 ```
 
-#### 示例 2：Twitter 配置 Cookie + 使用全局代理
+##### 示例 2：Twitter 配置 Cookie + 使用全局代理
 
 ```yaml
 default_parser_proxies: http://127.0.0.1:7890
@@ -253,7 +284,7 @@ platforms:
       - "auth_token=your_token_here; ct0=your_ct0_here"
 ```
 
-#### 示例 3：YouTube 使用独立代理池
+##### 示例 3：YouTube 使用独立代理池
 
 ```yaml
 platforms:
@@ -267,7 +298,7 @@ platforms:
       - http://proxy-eu-1:8080
 ```
 
-#### 示例 4：B站指定 Cookie 轮换 + 解析直连 + 下载走代理
+##### 示例 4：B站指定 Cookie 轮换 + 解析直连 + 下载走代理
 
 ```yaml
 platforms:
@@ -279,6 +310,8 @@ platforms:
       - "SESSDATA=xxx; bili_jct=xxx; buvid3=xxx"
       - "SESSDATA=yyy; bili_jct=yyy; buvid3=yyy"
 ```
+
+</details>
 
 ## 🤝 参与贡献
 
@@ -307,4 +340,3 @@ uv run pytest
 **如果这个项目对你有帮助，欢迎点个 ⭐ Star!**
 
 </div>
-

@@ -1,5 +1,5 @@
 import mimetypes
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import cast
@@ -9,7 +9,7 @@ from pyrogram import Client, raw, utils
 from pyrogram.file_id import FileId, FileType, ThumbnailSource
 
 from services.cache import CacheEntry, CacheMedia, CacheMediaType
-from services.media import resolve_media_info
+from services.media import prepare_video_thumbnail, resolve_media_info
 from services.pipeline import PipelineResult
 from utils.helpers import equivalent_caption_text
 
@@ -156,6 +156,13 @@ async def build_pipeline_rich_message(
     hide_source: bool = False,
 ) -> RichMessageBuild:
     sources = media_sources_from_pipeline(result)
+    sources = _validate_media(sources)
+    sources = [
+        replace(item, thumbnail_path=await prepare_video_thumbnail(item.path, item.duration))
+        if item.path is not None and item.kind != RichMediaKind.PHOTO
+        else item
+        for item in sources
+    ]
     prepared = [await prepare_rich_media(cli, item) for item in _validate_media(sources)]
     return assemble_rich_message(
         title=result.parse_result.title,
@@ -374,9 +381,7 @@ async def prepare_rich_media(cli: Client, item: RichMediaSource) -> PreparedRich
     if item.kind == RichMediaKind.ANIMATION:
         attributes.append(raw.types.DocumentAttributeAnimated())
     mime_type = mimetypes.guess_type(item.path.name)[0] or "video/mp4"
-    thumbnail = (
-        cast(raw.base.InputFile, await cli.save_file(str(item.thumbnail_path))) if item.thumbnail_path else None
-    )
+    thumbnail = cast(raw.base.InputFile, await cli.save_file(str(item.thumbnail_path))) if item.thumbnail_path else None
     input_media = raw.types.InputMediaUploadedDocument(
         file=await cli.save_file(str(item.path)),
         mime_type=mime_type,
@@ -412,7 +417,7 @@ async def prepare_rich_media(cli: Client, item: RichMediaSource) -> PreparedRich
     return PreparedRichMedia(
         item.kind,
         document,
-        CacheMedia(type=cache_type, file_id=file_id, has_thumbnail=thumbnail is not None),
+        CacheMedia(type=cache_type, file_id=file_id, has_thumbnail=bool(uploaded.document.thumbs)),
     )
 
 

@@ -1,11 +1,10 @@
 import os
 from pathlib import Path
-from typing import Any
-from urllib.parse import urlparse
+from typing import Annotated, Any
 
 from dotenv import load_dotenv
 from pydantic import Field, SecretStr, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from sqlalchemy import make_url
 
 load_dotenv()
@@ -21,11 +20,14 @@ class BotSettings(BaseSettings):
     bot_token: str = Field(...)
     api_id: str = Field(...)
     api_hash: str = Field(...)
-    bot_proxy: dict | None = Field(default=None)
+    bot_proxy: str | None = Field(default=None)
     data_path: Path = Field(default=Path("data"))
     language: str = Field(default="zh-hans")
+    admin_ids: Annotated[list[int], NoDecode] = Field(default=[], description="Bot 管理员 ID, 逗号分隔")
     cache_max_entries: int = Field(default=30000, ge=0, description="缓存最大条数, 0 为不限制")
     cache_disabled: bool = Field(default=False, description="禁用缓存")
+    parse_concurrency: int = Field(default=2, ge=1, description="下载、转码及上传并发任务上限")
+    parse_shutdown_timeout: float = Field(default=30, ge=0, description="停机等待解析任务的秒数")
 
     rate_limit_enabled: bool = Field(default=False, description="启用解析速率限制")
     rate_limit_burst: int = Field(default=5, ge=0, description="突发请求阈值, 0 为不限制")
@@ -78,23 +80,16 @@ class BotSettings(BaseSettings):
     def flyinglife_platform_id_set(self) -> set[str]:
         return {item.strip().lower() for item in self.flyinglife_platforms.split(",") if item.strip()}
 
-    @field_validator("bot_proxy", mode="before")
-    @classmethod
-    def proxy_config(cls, v: str | None = None) -> dict | None:
-        url = urlparse(v) if v else None
-        if not url:
-            return None
-        return {
-            "scheme": url.scheme,
-            "hostname": url.hostname,
-            "port": url.port,
-            "username": url.username,
-            "password": url.password,
-        }
-
     @property
     def bot_session_name(self) -> str:
         return f"bot_{self.bot_token.split(':')[0]}"
+
+    @field_validator("admin_ids", mode="before")
+    @classmethod
+    def admin_ids_init(cls, v: str | list[int]) -> list[int] | list[str]:
+        if isinstance(v, str):
+            return [i.strip() for i in v.split(",") if i.strip()]
+        return v
 
     @field_validator("data_path", mode="before")
     @classmethod

@@ -6,11 +6,9 @@ from parsehub.types import AnyParseResult
 
 from log import logger
 from services.flyinglife import flyinglife
-from services.pipeline import ParsePipeline, PipelineResult, StatusReporter
+from services.pipeline import ParsePipeline, PipelineResult, StatusReporter, _inflight
 
 logger = logger.bind(name="HybridPipeline")
-
-_inflight: dict[str, asyncio.Event] = {}
 
 
 class HybridParsePipeline:
@@ -85,18 +83,25 @@ class HybridParsePipeline:
         use_flyinglife = not self._skip_flyinglife and flyinglife.should_attempt(
             self._platform_id, context="hybrid_pipeline"
         )
-        if not use_flyinglife:
-            return await self._run_local(singleflight=self._singleflight)
-
         if self._singleflight:
             existing = _inflight.get(self._raw_url)
             if existing is not None:
                 self._waited = True
-                logger.debug(f"FlyingLife singleflight 命中, 跳过重复流水线: url={self._raw_url}")
+                logger.debug(f"Hybrid singleflight 命中, 跳过重复流水线: url={self._raw_url}")
                 await self._reporter.report(self._t("已有相同任务正在解析，请稍后重试。"))
                 return None
             _inflight[self._raw_url] = asyncio.Event()
             self._owns_inflight = True
+
+        if not use_flyinglife:
+            try:
+                result = await self._run_local(singleflight=False)
+                if result is None:
+                    self.finish()
+                return result
+            except BaseException:
+                self.finish()
+                raise
 
         try:
             remote = await flyinglife.run(

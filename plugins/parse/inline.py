@@ -64,7 +64,8 @@ from services.cache import (
     persistent_cache,
 )
 from services.guest_rich_message import RichMediaKind, RichMediaSource, prepare_rich_media
-from services.media import create_video_thumbnail, resolve_media_info
+from services.media import prepare_video_thumbnail, resolve_media_info
+from services.tasks import heavy_request
 from utils.helpers import to_list, with_request_id
 
 logger = logger.bind(name="InlineParse")
@@ -200,8 +201,7 @@ async def call_inline_parse(cli: Client, inline_query: InlineQuery) -> None:
             results = build_cached_inline_results(cached, raw_url, lang, config)
             await inline_query.answer(results[:50], cache_time=60)
             return
-        logger.info("inline: 视频缓存缺少 thumbnail, 移除后重新处理")
-        await persistent_cache.remove(raw_url)
+        logger.info("inline: 视频缓存缺少 thumbnail, 本次重新处理并保留完整缓存")
 
     parse_result = await resolve_inline_preview(inline_query.query, raw_url, platform_id)
 
@@ -212,6 +212,7 @@ async def call_inline_parse(cli: Client, inline_query: InlineQuery) -> None:
 
 @Client.on_chosen_inline_result()
 @with_request_id
+@heavy_request
 async def inline_result_download(cli: Client, chosen_result: ChosenInlineResult) -> None:
     if not chosen_result.result_id.startswith("download_"):
         return
@@ -276,7 +277,9 @@ async def inline_result_download(cli: Client, chosen_result: ChosenInlineResult)
             file_path_str = str(file_paths[0])
             logger.debug(f"inline 上传文件: {file_path_str}")
             width, height, duration = resolve_media_info(processed, file_path_str)
-            thumbnail_path = await create_video_thumbnail(file_path_str, duration or 0)
+            thumbnail_path = await prepare_video_thumbnail(
+                file_path_str, duration or 0, cover=resolve_inline_video_cover(video_ref, config)
+            )
             thumbnail_path_str = str(thumbnail_path) if thumbnail_path else None
 
             video_cover = resolve_inline_video_cover(video_ref, config)
